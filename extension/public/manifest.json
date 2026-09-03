@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "Grounded Job Assistant",
+  "version": "0.1.0",
+  "description": "Local-first, review-driven assistance for job postings and applications.",
+  "minimum_chrome_version": "120",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "action": {
+    "default_title": "Grounded Job Assistant",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  }
+}
