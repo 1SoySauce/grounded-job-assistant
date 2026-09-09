@@ -1,7 +1,15 @@
 import { build as bundle } from 'esbuild';
 import { build as buildVite } from 'vite';
+import { cp } from 'node:fs/promises';
 
 await buildVite();
+for (const directory of ['standard_fonts', 'cmaps']) {
+  await cp(
+    `node_modules/pdfjs-dist/${directory}`,
+    `dist/pdf-assets/${directory}`,
+    { recursive: true },
+  );
+}
 
 await Promise.all([
   bundle({

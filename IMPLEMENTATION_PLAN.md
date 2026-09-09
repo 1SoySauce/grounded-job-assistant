@@ -72,7 +72,17 @@ The future application engine will depend on a `BrowserDriver` interface. The ex
 - Mark imported data as unverified until the user reviews and saves it.
 - Add IndexedDB-backed resume binary storage with metadata kept separate from `Profile`.
 - Add PDF/DOCX parsing in a worker and a review-before-save flow.
-- Add export, import, and intentional local-data deletion controls.
+- Add explicit review of extracted resume data and intentional entry/resume deletion controls. Full backup export/restore is a separate future portability feature, outside the requested Milestone 2 scope.
+
+Implemented in v0.2.0 (manual browser verification pending):
+
+- `gja.applicant.v2` is a single atomic Chrome local-storage record containing **separate** `profile`, `answers`, `preferences`, and `imports` objects. The profile itself is schema v2 and excludes answers/preferences. Resume binaries and metadata live together in IndexedDB database `gja-resumes`, database version 1, record schema version 2.
+- Trusted settings UI calls the same validated repositories used by the background worker. No new profile-bearing runtime messages are exposed. Shared Web Locks and revision checks serialize writes across settings tabs and service-worker restarts. The popup/background use a read-only compatibility projection of v2 data.
+- Migration validates v1, retains the original `gja.profile.v1` without changing it, copies all supported fields, and maps indexed history verification paths to stable entry IDs. Corrupt, unknown-field, and future-version records stop reads/writes with a recoverable error rather than resetting data.
+- PDF.js uses a directly supplied packaged module-worker port, avoiding its blob-worker fallback on extension URLs. Standard fonts and character maps are packaged locally. DOCX raw-text extraction uses Mammoth in a terminable worker; document HTML is never rendered. PDF/DOCX parsing has time/text limits, and PDF parsing has a page limit.
+- Extraction offers only unambiguous exact email and explicit GitHub/LinkedIn URL suggestions. Names, history, skills, credentials, and dates are manually entered alongside extracted text. This deliberately conservative resume-field mapping is independent of job scanning.
+- Imported candidates persist as unverified drafts. Confirmation atomically merges nonempty contact values, appends reviewed history, unions skills, updates provenance, and removes the consumed draft. Contact conflicts need explicit replacement consent; existing history is never silently replaced. Unrelated unverified profile fields remain unverified.
+- Profile and answer editors reset their confirmation whenever values change. Later milestone navigation remains disabled. Permissions and the Milestone 1 page scanner are unchanged.
 
 Exit criteria: all requested fields round-trip locally, migrations are tested, content scripts cannot read the records, and no unreviewed import becomes verified.
 
@@ -142,4 +152,3 @@ Each milestone should include:
 ## Security workstream
 
 Before applicant data entry is implemented, create `docs/SECURITY.md` with data-flow boundaries, storage limitations, attacker assumptions, secret handling, message validation, AI minimization, logging rules, and incident-safe diagnostics. Local extension storage is not encryption at rest; the UI and documentation must not imply otherwise.
-

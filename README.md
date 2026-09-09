@@ -2,11 +2,11 @@
 
 Grounded Job Assistant is a local-first Chrome and Microsoft Edge extension foundation for accurate, review-driven job application assistance. It is an original implementation and does not use proprietary code, APIs, branding, or assets from other job-application products.
 
-The current release is **Milestone 1**. It installs, presents a popup and settings dashboard, creates protected versioned local storage, and can conservatively classify the active page after an explicit click. It does **not** yet import profiles or resumes, calculate match scores, autofill applications, call an AI provider, or submit anything.
+The current release is **Milestone 2 (v0.2.0)**. It includes a verified applicant profile editor, Answer Library, Job Preferences, multiple PDF/DOCX resumes, and an explicit resume import/review workflow. It preserves the original popup and conservative user-invoked page scanner. Match scoring, autofill, AI calls, and application submission are not implemented.
 
 ## Prerequisites
 
-- Node.js 20.19 or newer (Node.js 22 LTS is recommended)
+- Node.js 24.15 or newer (the bundled document parsers and UI-test dependencies require a modern Node runtime)
 - pnpm 11.19 (`corepack prepare pnpm@11.19.0 --activate`)
 - Chrome 120+ or a current Microsoft Edge release
 
@@ -37,13 +37,15 @@ C:\Users\Daniel\OneDrive\Desktop\Auto Job Application Extension\extension\dist
 5. Choose `C:\Users\Daniel\OneDrive\Desktop\Auto Job Application Extension\extension\dist`.
 6. Pin **Grounded Job Assistant** from Chrome's Extensions menu.
 7. Open a regular `http://` or `https://` page, click the extension, and select **Scan current page**.
-8. Select **Open settings** to view the Milestone 1 dashboard.
+8. Select **Open settings**, then My Profile, Resumes, Answer Library, or Job Preferences. No API key or environment configuration is required.
 
 Chrome blocks extension injection on internal pages such as `chrome://extensions`; the popup reports that condition rather than requesting broader access.
 
 ## Load in Microsoft Edge
 
 Use the same `dist` folder, but open `edge://extensions`, enable **Developer mode**, and choose **Load unpacked**.
+
+Brave uses the same build: open `brave://extensions`. If the extension is already installed, **Reload** its existing card instead of removing it; uninstalling deletes local data. Follow [the exact Milestone 2 manual tests](docs/MILESTONE_2_MANUAL_TESTS.md) before using this build as your applicant source of truth.
 
 ## Current privacy model
 
@@ -74,6 +76,8 @@ pnpm check         # lint + types + tests + production build
 
 ## Milestone boundary
 
-Profile configuration, resume upload, and supported-ATS application testing intentionally begin in Milestone 2 and later. Their controls are visible as future settings sections but are disabled so the UI does not imply that unimplemented safety-critical behavior works.
+Profile, Answer Library, Job Preferences, and Resumes are enabled. Applications, AI Settings, and Automation Settings remain disabled. The Vite preview preserves the dashboard/popup preview; applicant editing requires the installed extension so it cannot accidentally create a second source of truth on localhost.
+
+The applicant schema is v2. `gja.applicant.v2` separates profile, answers, preferences, and unverified drafts; `gja.profile.v1` is retained unchanged after migration. Resume metadata and original bytes live in the extension's IndexedDB. Stored files never become verified profile data automatically. Extraction suggests only unambiguous email and explicit GitHub/LinkedIn links; history, dates, and skills are manually mapped during review. PDFs have a 50-page limit, files a 10 MB limit, and extraction a 30-second deadline. Scanned PDFs require manual entry or a text-based replacement; there is no OCR.
 
 For the architecture and ordered roadmap, see [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md). For the exact handoff state, see [PROJECT_STATUS.md](PROJECT_STATUS.md).
