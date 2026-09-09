@@ -136,7 +136,7 @@ export function App() {
 
       <footer className="popup-footer">
         <span>Submission controls are disabled in this milestone.</span>
-        <span>v0.1.0</span>
+        <span>v0.2.0</span>
       </footer>
     </main>
   );
