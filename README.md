@@ -2,7 +2,7 @@
 
 Grounded Job Assistant is a local-first Chrome and Microsoft Edge extension foundation for accurate, review-driven job application assistance. It is an original implementation and does not use proprietary code, APIs, branding, or assets from other job-application products.
 
-The current release is **Milestone 2 (v0.2.0)**. It includes a verified applicant profile editor, Answer Library, Job Preferences, multiple PDF/DOCX resumes, and an explicit resume import/review workflow. It preserves the original popup and conservative user-invoked page scanner. Match scoring, autofill, AI calls, and application submission are not implemented.
+The current working branch is **Milestone 2.5 (v0.2.0)**. It includes a verified applicant profile editor, Answer Library, Job Preferences, multiple PDF/DOCX resumes, local structured resume suggestions with confidence/provenance, duplicate warnings, and an explicit import/review workflow. It preserves the original popup and conservative user-invoked page scanner. Match scoring, autofill, AI calls, and application submission are not implemented.
 
 ## Prerequisites
 
@@ -45,7 +45,7 @@ Chrome blocks extension injection on internal pages such as `chrome://extensions
 
 Use the same `dist` folder, but open `edge://extensions`, enable **Developer mode**, and choose **Load unpacked**.
 
-Brave uses the same build: open `brave://extensions`. If the extension is already installed, **Reload** its existing card instead of removing it; uninstalling deletes local data. Follow [the exact Milestone 2 manual tests](docs/MILESTONE_2_MANUAL_TESTS.md) before using this build as your applicant source of truth.
+Brave uses the same build: open `brave://extensions`. If the extension is already installed, **Reload** its existing card instead of removing it; uninstalling deletes local data. Follow [the Milestone 2.5 structured parsing tests](docs/MILESTONE_2_5_MANUAL_TESTS.md) and [the Milestone 2 regression tests](docs/MILESTONE_2_MANUAL_TESTS.md) before using this build as your applicant source of truth.
 
 ## Current privacy model
 

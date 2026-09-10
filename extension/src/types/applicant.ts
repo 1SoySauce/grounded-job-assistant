@@ -13,6 +13,30 @@ export const ApplicantProfileSchema = JobSeekerProfileSchema.omit({
   .extend({ schemaVersion: z.literal(2) })
   .strict();
 export type ApplicantProfile = z.infer<typeof ApplicantProfileSchema>;
+export const ImportSuggestionSchema = z
+  .object({
+    path: z.string().min(1).max(500),
+    confidence: z.enum(['high', 'medium', 'low']),
+    score: z.number().min(0).max(1),
+    sourceSection: z.string().min(1).max(100),
+    sourceText: z.string().min(1).max(2_000),
+  })
+  .strict();
+export type ImportSuggestion = z.infer<typeof ImportSuggestionSchema>;
+export const ImportDecisionSchema = z.enum([
+  'include',
+  'exclude',
+  'keep_saved',
+  'use_proposed',
+  'approve_separate',
+]);
+export const ImportDecisionsSchema = z
+  .record(z.string().min(1).max(500), ImportDecisionSchema)
+  .refine((value) => Object.keys(value).length <= 1_000, {
+    message: 'Too many import review decisions.',
+  });
+export type ImportDecision = z.infer<typeof ImportDecisionSchema>;
+export type ImportDecisions = z.infer<typeof ImportDecisionsSchema>;
 export const DraftSchema = z
   .object({
     id: z.string().uuid(),
@@ -21,6 +45,8 @@ export const DraftSchema = z
     text: z.string().max(200_000),
     createdAt: z.iso.datetime(),
     candidate: ApplicantProfileSchema,
+    suggestions: z.array(ImportSuggestionSchema).max(2_000).default([]),
+    decisions: ImportDecisionsSchema.default({}),
   })
   .strict();
 export type ImportDraft = z.infer<typeof DraftSchema>;
@@ -147,25 +173,114 @@ export function reviewedProfile(
   result.updatedAt = new Date().toISOString();
   return result;
 }
+const stateNames = new Map(
+  [
+    ['Alabama', 'AL'],
+    ['Alaska', 'AK'],
+    ['Arizona', 'AZ'],
+    ['Arkansas', 'AR'],
+    ['California', 'CA'],
+    ['Colorado', 'CO'],
+    ['Connecticut', 'CT'],
+    ['Delaware', 'DE'],
+    ['Florida', 'FL'],
+    ['Georgia', 'GA'],
+    ['Hawaii', 'HI'],
+    ['Idaho', 'ID'],
+    ['Illinois', 'IL'],
+    ['Indiana', 'IN'],
+    ['Iowa', 'IA'],
+    ['Kansas', 'KS'],
+    ['Kentucky', 'KY'],
+    ['Louisiana', 'LA'],
+    ['Maine', 'ME'],
+    ['Maryland', 'MD'],
+    ['Massachusetts', 'MA'],
+    ['Michigan', 'MI'],
+    ['Minnesota', 'MN'],
+    ['Mississippi', 'MS'],
+    ['Missouri', 'MO'],
+    ['Montana', 'MT'],
+    ['Nebraska', 'NE'],
+    ['Nevada', 'NV'],
+    ['New Hampshire', 'NH'],
+    ['New Jersey', 'NJ'],
+    ['New Mexico', 'NM'],
+    ['New York', 'NY'],
+    ['North Carolina', 'NC'],
+    ['North Dakota', 'ND'],
+    ['Ohio', 'OH'],
+    ['Oklahoma', 'OK'],
+    ['Oregon', 'OR'],
+    ['Pennsylvania', 'PA'],
+    ['Rhode Island', 'RI'],
+    ['South Carolina', 'SC'],
+    ['South Dakota', 'SD'],
+    ['Tennessee', 'TN'],
+    ['Texas', 'TX'],
+    ['Utah', 'UT'],
+    ['Vermont', 'VT'],
+    ['Virginia', 'VA'],
+    ['Washington', 'WA'],
+    ['West Virginia', 'WV'],
+    ['Wisconsin', 'WI'],
+    ['Wyoming', 'WY'],
+    ['District of Columbia', 'DC'],
+  ].map(
+    ([name, abbreviation]) =>
+      [name!.toLocaleLowerCase(), abbreviation!] as const,
+  ),
+);
+
+export function contactValuesEquivalent(
+  key: keyof ApplicantProfile['personal'],
+  saved: string,
+  proposed: string,
+): boolean {
+  if (key === 'phone') {
+    const normalizePhone = (value: string) => {
+      const digits = value.replace(/\D/g, '');
+      return digits.length === 11 && digits.startsWith('1')
+        ? digits.slice(1)
+        : digits;
+    };
+    const savedPhone = normalizePhone(saved);
+    const proposedPhone = normalizePhone(proposed);
+    return savedPhone.length >= 7 && savedPhone === proposedPhone;
+  }
+  if (key === 'state') {
+    const normalizeState = (value: string) => {
+      const cleaned = value.trim().toLocaleLowerCase();
+      return stateNames.get(cleaned) ?? cleaned.toUpperCase();
+    };
+    return normalizeState(saved) === normalizeState(proposed);
+  }
+  if (key === 'email')
+    return (
+      saved.trim().toLocaleLowerCase() === proposed.trim().toLocaleLowerCase()
+    );
+  return saved === proposed;
+}
+
 export function mergeImport(
   current: ApplicantProfile,
   candidate: ApplicantProfile,
-  replaceConflicts: boolean,
+  decisions: ImportDecisions = {},
 ): ApplicantProfile {
+  const reviewedDecisions = ImportDecisionsSchema.parse(decisions);
   const merged = structuredClone(current);
   for (const key of Object.keys(candidate.personal) as Array<
     keyof ApplicantProfile['personal']
   >) {
     const incoming = candidate.personal[key];
     if (!incoming) continue;
-    if (
-      merged.personal[key] &&
-      merged.personal[key] !== incoming &&
-      !replaceConflicts
-    )
-      throw new Error(
-        'Contact information conflicts with your saved profile. Review and explicitly allow replacement.',
-      );
+    if (merged.personal[key]) {
+      if (contactValuesEquivalent(key, merged.personal[key], incoming))
+        continue;
+      if (reviewedDecisions[`personal.${key}`] !== 'use_proposed') continue;
+    } else if (reviewedDecisions[`personal.${key}`] === 'exclude') {
+      continue;
+    }
     merged.personal[key] = incoming;
   }
   for (const section of [
@@ -174,23 +289,155 @@ export function mergeImport(
     'projects',
     'certifications',
   ] as const) {
+    const duplicateSummary = findImportDuplicates(current, candidate).filter(
+      (duplicate) => duplicate.section === section,
+    );
+    const duplicatesByCandidate = new Map(
+      duplicateSummary.map((duplicate) => [duplicate.candidateId, duplicate]),
+    );
     Object.assign(merged, {
       [section]: [
         ...merged[section],
-        ...candidate[section].map((entry) => ({
-          ...entry,
-          id: crypto.randomUUID(),
-        })),
+        ...candidate[section]
+          .filter((entry) => {
+            const duplicate = duplicatesByCandidate.get(entry.id);
+            if (duplicate?.kind === 'exact') return false;
+            const decision = reviewedDecisions[`${section}.${entry.id}`];
+            if (duplicate?.kind === 'possible')
+              return decision === 'approve_separate';
+            return decision !== 'exclude';
+          })
+          .map((entry) => ({
+            ...entry,
+            id: crypto.randomUUID(),
+          })),
       ],
     });
   }
   for (const key of Object.keys(candidate.skills) as Array<
     keyof ApplicantProfile['skills']
-  >)
+  >) {
+    if (reviewedDecisions[`skills.${key}`] === 'exclude') continue;
     merged.skills[key] = [
       ...new Set([...merged.skills[key], ...candidate.skills[key]]),
     ];
+  }
   return merged;
+}
+
+export function initializeImportDecisions(
+  current: ApplicantProfile,
+  candidate: ApplicantProfile,
+  decisions: ImportDecisions = {},
+): ImportDecisions {
+  const initialized: ImportDecisions = {};
+  for (const key of Object.keys(candidate.personal) as Array<
+    keyof ApplicantProfile['personal']
+  >) {
+    const proposed = candidate.personal[key];
+    if (!proposed) continue;
+    const saved = current.personal[key];
+    if (saved) {
+      if (contactValuesEquivalent(key, saved, proposed)) {
+        initialized[`personal.${key}`] = 'keep_saved';
+        continue;
+      }
+      initialized[`personal.${key}`] =
+        decisions[`personal.${key}`] === 'use_proposed'
+          ? 'use_proposed'
+          : 'keep_saved';
+      continue;
+    }
+    initialized[`personal.${key}`] =
+      decisions[`personal.${key}`] === 'exclude' ? 'exclude' : 'include';
+  }
+  const duplicates = findImportDuplicates(current, candidate);
+  for (const section of [
+    'education',
+    'employment',
+    'projects',
+    'certifications',
+  ] as const) {
+    for (const entry of candidate[section]) {
+      const path = `${section}.${entry.id}`;
+      const duplicate = duplicates.find(
+        (item) => item.section === section && item.candidateId === entry.id,
+      );
+      if (duplicate?.kind === 'exact') initialized[path] = 'exclude';
+      else if (duplicate?.kind === 'possible')
+        initialized[path] =
+          decisions[path] === 'approve_separate'
+            ? 'approve_separate'
+            : 'exclude';
+      else
+        initialized[path] =
+          decisions[path] === 'exclude' ? 'exclude' : 'include';
+    }
+  }
+  for (const key of Object.keys(candidate.skills) as Array<
+    keyof ApplicantProfile['skills']
+  >) {
+    if (!candidate.skills[key].length) continue;
+    const path = `skills.${key}`;
+    initialized[path] = decisions[path] === 'exclude' ? 'exclude' : 'include';
+  }
+  return initialized;
+}
+
+export type ImportDuplicate = {
+  section: 'education' | 'employment' | 'projects' | 'certifications';
+  candidateId: string;
+  existingId: string;
+  kind: 'exact' | 'possible';
+  description: string;
+};
+
+function normalized(value: string): string {
+  return value
+    .toLocaleLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+export function findImportDuplicates(
+  current: ApplicantProfile,
+  candidate: ApplicantProfile,
+): ImportDuplicate[] {
+  const results: ImportDuplicate[] = [];
+  const configs = {
+    education: ['institution', 'degree'] as const,
+    employment: ['employer', 'title'] as const,
+    projects: ['name'] as const,
+    certifications: ['certification'] as const,
+  };
+  for (const section of Object.keys(configs) as Array<keyof typeof configs>) {
+    const keys = configs[section];
+    for (const incoming of candidate[section]) {
+      for (const saved of current[section]) {
+        const incomingRecord = incoming as unknown as Record<string, unknown>;
+        const savedRecord = saved as unknown as Record<string, unknown>;
+        const comparisons = keys.map((key) => ({
+          incoming: normalized(String(incomingRecord[key])),
+          saved: normalized(String(savedRecord[key])),
+        }));
+        const primary = comparisons[0]!;
+        if (!primary.incoming || primary.incoming !== primary.saved) continue;
+        const exact = comparisons.every(
+          (comparison) =>
+            comparison.incoming && comparison.incoming === comparison.saved,
+        );
+        results.push({
+          section,
+          candidateId: incoming.id,
+          existingId: saved.id,
+          kind: exact ? 'exact' : 'possible',
+          description: `${section}: ${String(incomingRecord[keys[0]])}`,
+        });
+        break;
+      }
+    }
+  }
+  return results;
 }
 export function validateAnswers(
   input: ApplicantStore['answers'],

@@ -163,7 +163,6 @@ export function confirmImport(
   draft: ImportDraft,
   revision: number,
   confirmed: boolean,
-  replaceConflicts: boolean,
 ) {
   if (!confirmed)
     return Promise.reject(
@@ -175,10 +174,11 @@ export function confirmImport(
       throw new Error(
         'This import is no longer available. Reload the section.',
       );
+    const parsed = DraftSchema.parse(draft);
     const merged = mergeImport(
       current.profile,
-      DraftSchema.parse(draft).candidate,
-      replaceConflicts,
+      parsed.candidate,
+      parsed.decisions,
     );
     current.profile = reviewedProfile(
       merged,

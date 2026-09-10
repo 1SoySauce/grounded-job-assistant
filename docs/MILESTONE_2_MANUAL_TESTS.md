@@ -49,9 +49,9 @@ pnpm verify:dist
 ## Multiple resumes and review
 
 1. Open Resumes. Add a small text-based PDF with a name such as `IT Support Resume` and intended job categories, one per line. Use only files you intend to store locally.
-2. Expect the original file metadata to appear, followed by **Unverified import review**. The extracted text should be readable. Only unambiguous email and explicit GitHub/LinkedIn URLs may be suggested automatically. Other fields remain blank for manual mapping/correction.
+2. Expect the original file metadata to appear, followed by **Unverified import review**. The extracted text should be readable. On the Milestone 2.5 branch, structured fields may also be suggested with confidence and source text; all suggestions remain unverified and require correction/review.
 3. Verify that My Profile has not changed. If you have edited the review, use **Save unverified draft** before leaving. Reopen Resumes and the draft: those edits should persist but remain unverified.
-4. In the review, correct the email if necessary and manually add supported history or skills alongside the extracted text. Expand **Existing profile for comparison**. Read **Changes to your profile**. Imported history appends; avoid manually adding history you already have.
+4. In the review, correct or remove any structured suggestion and manually add omitted history or skills alongside the extracted text. Expand **Existing profile for comparison**. Read **Changes to your profile**. Exact history duplicates are skipped; possible duplicates require explicit approval as separate records.
 5. Confirm that the import button remains disabled until you check the review confirmation. Changing a proposed value resets confirmation.
 6. If an imported contact value differs from a saved value, the review must show both values and require the separate **Replace the conflicting saved contact values** checkbox. Leaving that unchecked must block confirmation.
 7. Confirm the import. The draft disappears and the reviewed values appear in My Profile. Existing blank import fields must not erase saved facts. Existing history must remain. Repeated clicks must not consume the same draft twice.
