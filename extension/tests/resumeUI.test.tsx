@@ -281,7 +281,10 @@ describe('resume management UI integration', () => {
     fireEvent.click(
       screen.getByRole('button', { name: 'Save unverified draft' }),
     );
-    await screen.findByRole('button', { name: /Review unverified import/ });
+    const reopenButton = await screen.findByRole('button', {
+      name: /Review unverified import/,
+    });
+    await waitFor(() => expect(reopenButton).toBeEnabled());
     expect((await getApplicant()).imports[0]!.decisions).toMatchObject({
       'personal.city': 'exclude',
       'skills.programming': 'exclude',
@@ -380,6 +383,18 @@ Synthetic Review Workspace
     expect(region.querySelector('table')).toHaveClass('review-table');
     expect(screen.getByLabelText('Decision for Project 1')).toBeVisible();
     expect(screen.getAllByRole('columnheader')).toHaveLength(4);
+
+    region.focus();
+    expect(region).toHaveFocus();
+    region.scrollLeft = 80;
+    expect(fireEvent.keyDown(region, { key: 'ArrowRight' })).toBe(false);
+    expect(region.scrollLeft).toBe(120);
+    expect(fireEvent.keyDown(region, { key: 'ArrowLeft' })).toBe(false);
+    expect(region.scrollLeft).toBe(80);
+
+    const decision = screen.getByLabelText('Decision for Project 1');
+    fireEvent.keyDown(decision, { key: 'ArrowRight' });
+    expect(region.scrollLeft).toBe(80);
   });
   it('does not show a conflict for equivalent phone and state formatting', async () => {
     let data = await getApplicant();

@@ -327,6 +327,14 @@ function terminalEducationDate(
   const text = match[1].replace(/[\s,|•·-]+$/, '').trim();
   return text ? { text, date: cleanLine(match[2]) } : undefined;
 }
+function standaloneDateValue(value: string): string | undefined {
+  const match = new RegExp(`^(?:(?:${month})\\.?\\s+\\d{4}|\\d{4})$`, 'i').exec(
+    value,
+  );
+  if (!match) return undefined;
+  const year = Number(match[0].match(/\d{4}$/)?.[0]);
+  return year >= 1950 && year <= 2100 ? cleanLine(match[0]) : undefined;
+}
 function labeledEducationValues(
   value: string,
 ): Partial<Record<'major' | 'concentration' | 'minor' | 'gpa', string>> {
@@ -655,10 +663,14 @@ function educationCandidates(
         source,
       );
     } else if (!entry.graduationDate) {
-      const graduationLine = block.find((line) =>
-        /\b(?:expected|graduat(?:ed|ion))\b/i.test(line),
-      );
-      const date = graduationLine?.match(new RegExp(dateToken, 'i'))?.[0];
+      const graduationLine =
+        block.find((line) =>
+          /\b(?:expected|graduat(?:ed|ion))\b/i.test(line),
+        ) ?? block.find((line) => standaloneDateValue(line));
+      const date = graduationLine
+        ? (standaloneDateValue(graduationLine) ??
+          graduationLine.match(new RegExp(dateToken, 'i'))?.[0])
+        : undefined;
       if (date && graduationLine) {
         entry.graduationDate = date;
         addSuggestion(
@@ -881,6 +893,7 @@ function looksLikeEmploymentBoundary(lines: string[], index: number): boolean {
 }
 
 function looksLikeProjectHeader(value: string): boolean {
+  if (standaloneDateValue(value)) return false;
   const range = dateRange(value);
   const withoutDate = range ? value.replace(range.source, '') : value;
   const withoutUrls = withoutDate.replace(urlPattern, '').trim();
@@ -987,6 +1000,7 @@ function projectCandidates(
       .some(
         (value) =>
           dateRange(lines[value]!) !== undefined ||
+          standaloneDateValue(lines[value]!) !== undefined ||
           looksLikeProjectDescriptor(lines[value]!),
       );
     const nearbyBullet = [next, afterNext, third]

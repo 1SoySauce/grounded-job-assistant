@@ -451,8 +451,12 @@ export function validateAnswers(
       .trim()
       .toLocaleLowerCase()
       .replace(/\s+/g, ' ');
-    if (!answer.normalizedQuestion || seen.has(answer.normalizedQuestion))
-      throw new Error('Questions must be nonempty and unique.');
+    if (!answer.normalizedQuestion)
+      throw new Error('Questions must be nonempty.');
+    if (seen.has(answer.normalizedQuestion))
+      throw new Error(
+        'That question already exists in your Answer Library. Questions must be unique.',
+      );
     seen.add(answer.normalizedQuestion);
     if (answer.sensitiveCategory && answer.mode === 'ai_generated_allowed')
       throw new Error(

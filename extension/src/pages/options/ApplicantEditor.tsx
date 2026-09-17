@@ -49,6 +49,7 @@ export function ApplicantEditor({
   }, []);
   function edit(next: ApplicantStore) {
     setData(next);
+    setError('');
     setConfirmed(false);
     onDirty(true);
     setMessage('Unsaved changes');
@@ -78,7 +79,7 @@ export function ApplicantEditor({
   return (
     <section className="panel editor-panel">
       <h1>{section}</h1>
-      {error && (
+      {error && !data && (
         <p role="alert" className="notice notice--error">
           {error}
         </p>
@@ -92,6 +93,14 @@ export function ApplicantEditor({
             onSubmit={(event) => {
               event.preventDefault();
               void save();
+            }}
+            onInvalid={(event) => {
+              if (section !== 'Job Preferences') return;
+              const input = event.target as HTMLInputElement;
+              if (!input.validity.rangeUnderflow) return;
+              event.preventDefault();
+              const label = input.labels?.[0]?.textContent?.trim() || 'Value';
+              setError(`${label} must be zero or greater.`);
             }}
           >
             <fieldset disabled={busy} className="editor-controls">
@@ -120,7 +129,7 @@ export function ApplicantEditor({
                       <ValueFields
                         prefix={answer.id}
                         value={{ question: answer.question }}
-                        onChange={(_, value) =>
+                        onChange={(_, value) => {
                           edit({
                             ...data,
                             answers: data.answers.map((item) =>
@@ -128,8 +137,8 @@ export function ApplicantEditor({
                                 ? { ...item, question: String(value) }
                                 : item,
                             ),
-                          })
-                        }
+                          });
+                        }}
                       />
                       <label>
                         Answer type
@@ -320,6 +329,11 @@ export function ApplicantEditor({
                     ),
                   )}
                 </>
+              )}
+              {error && (
+                <p role="alert" className="notice notice--error">
+                  {error}
+                </p>
               )}
               {section !== 'Job Preferences' && (
                 <label className="check-label review-confirm">

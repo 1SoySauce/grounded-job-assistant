@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type KeyboardEvent } from 'react';
 import {
   addResume,
   deleteResume,
@@ -115,6 +115,18 @@ type ReviewRow = {
   choices?: Array<{ value: ImportDecision; label: string }>;
   status?: string;
 };
+
+function scrollReviewTable(event: KeyboardEvent<HTMLDivElement>) {
+  if (
+    event.target !== event.currentTarget ||
+    (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight')
+  ) {
+    return;
+  }
+
+  event.preventDefault();
+  event.currentTarget.scrollLeft += event.key === 'ArrowLeft' ? -40 : 40;
+}
 
 function reviewRows(
   draft: ImportDraft,
@@ -419,6 +431,7 @@ function ReviewDraft({
           role="region"
           aria-label="Profile change decisions"
           tabIndex={0}
+          onKeyDown={scrollReviewTable}
         >
           <table className="review-table">
             <colgroup>

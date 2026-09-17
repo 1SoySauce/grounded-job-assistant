@@ -144,6 +144,36 @@ Associate of Science in Information Systems
     expect(entry.startDate).toBe('');
   });
 
+  it('preserves a standalone education year as the graduation date', () => {
+    const entry = createImportDraft(
+      id(),
+      'Education\nExample Community College\nAssociate of Science, Information Technology\n2022',
+    ).candidate.education[0]!;
+    expect(entry.graduationDate).toBe('2022');
+    expect(entry.startDate).toBe('');
+  });
+
+  it('preserves an abbreviated standalone education month and year', () => {
+    const entry = createImportDraft(
+      id(),
+      'Education\nExample Community College\nAssociate of Science, Information Technology\nMar. 2026',
+    ).candidate.education[0]!;
+    expect(entry.graduationDate).toBe('Mar. 2026');
+    expect(entry.startDate).toBe('');
+  });
+
+  it.each(['March 2026 project', 'Project 2026', 'Started March 2026'])(
+    'does not treat "%s" as a standalone education date',
+    (line) => {
+      const entry = createImportDraft(
+        id(),
+        `Education\nExample Community College\nAssociate of Science, Information Technology\n${line}`,
+      ).candidate.education[0]!;
+      expect(entry.graduationDate).toBe('');
+      expect(entry.startDate).toBe('');
+    },
+  );
+
   it('associates explicitly labeled education fields with their record', () => {
     const draft = createImportDraft(
       id(),
@@ -497,6 +527,30 @@ Team Project | 2024 - 2025
     ]);
     expect(projects[0]!.description).toContain('Capstone Project');
     expect(projects[1]!.description).toContain('Team Project');
+  });
+
+  it('keeps standalone project month/year and year-only lines as context', () => {
+    const projects = createImportDraft(
+      id(),
+      `PROJECTS
+Help Desk Test Project
+March 2026
+- Built a ticket-tracking test application.
+Cloud Lab Project
+2025
+- Configured virtual machines and Docker containers.`,
+    ).candidate.projects;
+    expect(projects).toHaveLength(2);
+    expect(projects[0]).toMatchObject({
+      name: 'Help Desk Test Project',
+      description: 'March 2026',
+      responsibilities: ['Built a ticket-tracking test application.'],
+    });
+    expect(projects[1]).toMatchObject({
+      name: 'Cloud Lab Project',
+      description: '2025',
+      responsibilities: ['Configured virtual machines and Docker containers.'],
+    });
   });
 
   it('omits an uncertain header-like line instead of merging it into a bullet', () => {
