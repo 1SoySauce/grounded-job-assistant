@@ -86,6 +86,23 @@ Implemented in v0.2.0 (manual browser verification pending):
 
 Exit criteria: all requested fields round-trip locally, migrations are tested, content scripts cannot read the records, and no unreviewed import becomes verified.
 
+### 2.5. Structured resume parsing
+
+Implemented on `milestone-2-5-resume-parsing` (manual browser verification pending):
+
+- Added deterministic, local heading normalization and section boundaries for common Education, Employment/Experience, Projects, Skills, and Certifications variants, including capitalization, punctuation, whitespace, inline headings, and spaced-letter PDF artifacts.
+- Added conservative candidates for a standalone header name, exact contact values, explicit location/country, multiple education and employment records, source-precision date ranges, responsibilities, technologies explicitly present in work text, clear Projects-section records/URLs, categorized skills, and explicit certification entries.
+- Added per-suggestion numeric confidence, high/medium/low classification, source section/path, and exact source text. Metadata is persisted only with the unverified draft and displayed during review.
+- Kept raw extracted text beside structured suggestions. Review supports editing, clearing values, removing whole proposed records, comparing saved values, saving an unverified draft, and explicit final confirmation. Any proposed-value edit resets confirmation.
+- Added conservative normalized duplicate detection. Exact history matches are skipped; possible matches require explicit approval to append separately; uncertain records are never merged automatically.
+- Kept PDF/DOCX binaries, workers, limits, permissions, and local-only extraction unchanged. No OCR, external API, network request, job scanning, scoring, ATS adapter, form parsing, autofill, navigation, queue, or submission behavior was added.
+- Manual Brave hardening now rejects non-country contact tokens in location lines, reads separate Major/Concentration/Minor labels, separates conservative trailing US locations from employment titles/companies, requires stronger project-header evidence while joining wrapped bullet continuations, and maps meaningful composite skill labels by supported-category precedence.
+- A second manual hardening pass tokenizes multiple education labels on one line, separates conservative institution/location and terminal graduation-date suffixes, prevents next-employment headers from entering prior responsibilities, combines stronger positive signals for later project boundaries, and normalizes only phone formatting, US state names, and email casing for conflict comparison without changing stored display values.
+- A third project-boundary hardening pass pairs a stronger project title with an adjacent project-type descriptor, keeps attached title dates intact, preserves later genuine project boundaries, and records project name, description, responsibility, technology, and URL provenance independently.
+- Import review now persists independent decisions for personal fields, history records, and skill categories. Conflicts safely default to keeping verified values, possible duplicates require per-record approval, and final confirmation applies only retained proposals. The comparison table uses readable indexed labels, proportional columns, wrapped values, and horizontal overflow at narrow widths.
+
+Exit criteria: structured suggestions remain unverified, every parser proposal has confidence/provenance, duplicate and conflict gates require explicit action, raw text remains available, and all Milestone 1/2 regressions pass.
+
 ### 3. Job posting detection and normalized scanning
 
 - Add semantic, ARIA, JSON-LD, and DOM-hierarchy extraction.

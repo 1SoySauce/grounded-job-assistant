@@ -12,7 +12,12 @@ import {
   saveVerifiedProfile,
 } from '../src/storage/applicantRepository';
 import { createEmptyProfile } from '../src/types/profile';
-import { emptyApplicant, facts } from '../src/types/applicant';
+import {
+  contactValuesEquivalent,
+  emptyApplicant,
+  facts,
+  initializeImportDecisions,
+} from '../src/types/applicant';
 import { createImportDraft } from '../src/imports/extractCandidates';
 import { getOrCreateProfile } from '../src/storage/profileRepository';
 
@@ -45,6 +50,7 @@ describe('versioned applicant storage', () => {
         degree: 'BS',
         major: 'MIS',
         concentration: '',
+        minor: '',
         gpa: '',
         startDate: '2020',
         graduationDate: '2024',
@@ -180,6 +186,7 @@ describe('profile CRUD and review', () => {
         degree: '',
         major: '',
         concentration: '',
+        minor: '',
         gpa: '',
         startDate: '2020',
         graduationDate: '',
@@ -371,15 +378,34 @@ describe('answers and preferences', () => {
   });
 });
 describe('unverified imports', () => {
-  it('suggests only unambiguous email and explicit URLs, never identity or employment', () => {
+  it('loads an existing draft without stored decisions using safe defaults', async () => {
+    const original = emptyApplicant();
+    const draft = createImportDraft(crypto.randomUUID(), 'legacy@example.test');
+    const legacyDraft = { ...draft } as Partial<typeof draft>;
+    delete legacyDraft.decisions;
+    original.imports = [legacyDraft as typeof draft];
+    storage = storageHarness({ [APPLICANT_KEY]: original });
+    const loaded = await getApplicant();
+    expect(loaded.imports[0]!.decisions).toEqual({});
+    expect(
+      initializeImportDecisions(
+        loaded.profile,
+        loaded.imports[0]!.candidate,
+        loaded.imports[0]!.decisions,
+      )['personal.email'],
+    ).toBe('include');
+  });
+  it('suggests a standalone name and exact contact data without verifying it', () => {
     const draft = createImportDraft(
       crypto.randomUUID(),
       'Taylor Example\ntaylor@example.com\nhttps://github.com/example\nEngineer since 2019',
     );
     expect(draft.candidate.personal.email).toBe('taylor@example.com');
-    expect(draft.candidate.personal.firstName).toBe('');
+    expect(draft.candidate.personal.firstName).toBe('Taylor');
+    expect(draft.candidate.personal.lastName).toBe('Example');
     expect(draft.candidate.employment).toEqual([]);
     expect(draft.candidate.verification).toEqual({});
+    expect(draft.suggestions.every((item) => item.sourceText)).toBe(true);
     expect(
       createImportDraft(crypto.randomUUID(), 'a@example.com b@example.com')
         .candidate.personal.email,
@@ -398,34 +424,195 @@ describe('unverified imports', () => {
     data = await saveImport(draft, data.revision);
     expect(data.imports[0]!.candidate.verification).toEqual({});
     expect(data.profile.personal.email).toBe('');
-    await expect(
-      confirmImport(draft, data.revision, false, false),
-    ).rejects.toThrow(/confirmation/);
-    const saved = await confirmImport(draft, data.revision, true, false);
+    await expect(confirmImport(draft, data.revision, false)).rejects.toThrow(
+      /confirmation/,
+    );
+    const saved = await confirmImport(draft, data.revision, true);
     expect(saved.profile.personal.firstName).toBe('Existing');
     expect(saved.profile.personal.email).toBe('new@example.com');
     expect(saved.profile.verification['personal.email']!.source).toBe(
       'resume_import',
     );
     expect(saved.imports).toEqual([]);
-    await expect(
-      confirmImport(draft, saved.revision, true, false),
-    ).rejects.toThrow(/no longer/);
+    await expect(confirmImport(draft, saved.revision, true)).rejects.toThrow(
+      /no longer/,
+    );
   });
-  it('rejects conflicts unless explicitly reviewed and authorized', async () => {
+  it('keeps a saved conflict by default and replaces only when selected', async () => {
     let data = await getApplicant();
     data.profile.personal.email = 'old@example.com';
     data = await saveVerifiedProfile(data.profile, 0, true);
     const draft = createImportDraft(crypto.randomUUID(), 'new@example.com');
     data = await saveImport(draft, data.revision);
-    await expect(
-      confirmImport(draft, data.revision, true, false),
-    ).rejects.toThrow(/conflicts/);
-    expect((await getApplicant()).profile.personal.email).toBe(
-      'old@example.com',
+    draft.decisions = initializeImportDecisions(data.profile, draft.candidate);
+    expect(draft.decisions['personal.email']).toBe('keep_saved');
+    data = await confirmImport(draft, data.revision, true);
+    expect(data.profile.personal.email).toBe('old@example.com');
+
+    const replacement = createImportDraft(
+      crypto.randomUUID(),
+      'new@example.com',
     );
-    data = await confirmImport(draft, data.revision, true, true);
+    replacement.decisions['personal.email'] = 'use_proposed';
+    data = await saveImport(replacement, data.revision);
+    data = await confirmImport(replacement, data.revision, true);
     expect(data.profile.personal.email).toBe('new@example.com');
+  });
+  it('does not flag formatting-only phone, state, or email differences as conflicts', async () => {
+    let data = await getApplicant();
+    data.profile.personal.phone = '(555) 123-4567';
+    data.profile.personal.state = 'New York';
+    data.profile.personal.email = 'Person@Example.com';
+    data = await saveVerifiedProfile(data.profile, data.revision, true);
+    const draft = createImportDraft(crypto.randomUUID(), '');
+    draft.candidate.personal.phone = '555-123-4567';
+    draft.candidate.personal.state = 'NY';
+    draft.candidate.personal.email = 'person@example.com';
+    data = await saveImport(draft, data.revision);
+    data = await confirmImport(draft, data.revision, true);
+    expect(data.profile.personal).toMatchObject({
+      phone: '(555) 123-4567',
+      state: 'New York',
+      email: 'Person@Example.com',
+    });
+  });
+  it('keeps genuinely different contact values in the explicit conflict flow', () => {
+    expect(
+      contactValuesEquivalent('phone', '555-123-4567', '555-987-6543'),
+    ).toBe(false);
+    expect(contactValuesEquivalent('state', 'New York', 'New Jersey')).toBe(
+      false,
+    );
+    expect(
+      contactValuesEquivalent(
+        'email',
+        'person@example.com',
+        'different@example.com',
+      ),
+    ).toBe(false);
+  });
+  it('applies simultaneous scalar conflict decisions independently', async () => {
+    let data = await getApplicant();
+    data.profile.personal.email = 'saved@example.test';
+    data.profile.personal.phone = '555-111-2222';
+    data = await saveVerifiedProfile(data.profile, data.revision, true);
+    const draft = createImportDraft(crypto.randomUUID(), '');
+    draft.candidate.personal.email = 'proposed@example.test';
+    draft.candidate.personal.phone = '555-333-4444';
+    draft.decisions = {
+      'personal.email': 'use_proposed',
+      'personal.phone': 'keep_saved',
+    };
+    data = await saveImport(draft, data.revision);
+    data = await confirmImport(draft, data.revision, true);
+    expect(data.profile.personal).toMatchObject({
+      email: 'proposed@example.test',
+      phone: '555-111-2222',
+    });
+  });
+  it('includes a new scalar by default and allows it to be declined', async () => {
+    let data = await getApplicant();
+    const included = createImportDraft(crypto.randomUUID(), '');
+    included.candidate.personal.city = 'Sample City';
+    data = await saveImport(included, data.revision);
+    data = await confirmImport(included, data.revision, true);
+    expect(data.profile.personal.city).toBe('Sample City');
+
+    const declined = createImportDraft(crypto.randomUUID(), '');
+    declined.candidate.personal.country = 'Canada';
+    declined.decisions['personal.country'] = 'exclude';
+    data = await saveImport(declined, data.revision);
+    data = await confirmImport(declined, data.revision, true);
+    expect(data.profile.personal.country).toBe('');
+  });
+  it('declines one education record while retaining another', async () => {
+    let data = await getApplicant();
+    const draft = createImportDraft(crypto.randomUUID(), '');
+    const first = {
+      id: crypto.randomUUID(),
+      institution: 'Example Technical College',
+      degree: 'BS',
+      major: 'Information Systems',
+      concentration: '',
+      minor: '',
+      gpa: '',
+      startDate: '',
+      graduationDate: '2025',
+      location: '',
+    };
+    const second = {
+      ...first,
+      id: crypto.randomUUID(),
+      institution: 'Sample State University',
+    };
+    draft.candidate.education = [first, second];
+    draft.decisions[`education.${first.id}`] = 'exclude';
+    data = await saveImport(draft, data.revision);
+    data = await confirmImport(draft, data.revision, true);
+    expect(
+      data.profile.education.map(({ institution }) => institution),
+    ).toEqual(['Sample State University']);
+  });
+  it('declines one project while retaining another', async () => {
+    let data = await getApplicant();
+    const draft = createImportDraft(crypto.randomUUID(), '');
+    const first = {
+      id: crypto.randomUUID(),
+      name: 'Synthetic Queue Console',
+      description: '',
+      technologies: ['TypeScript'],
+      responsibilities: ['Built queue views.'],
+      accomplishments: [],
+      githubUrl: '',
+      deployedUrl: '',
+    };
+    const second = {
+      ...first,
+      id: crypto.randomUUID(),
+      name: 'Synthetic Audit Portal',
+    };
+    draft.candidate.projects = [first, second];
+    draft.decisions[`projects.${second.id}`] = 'exclude';
+    data = await saveImport(draft, data.revision);
+    data = await confirmImport(draft, data.revision, true);
+    expect(data.profile.projects.map(({ name }) => name)).toEqual([
+      'Synthetic Queue Console',
+    ]);
+  });
+  it('merges only included skill categories and never removes saved skills', async () => {
+    let data = await getApplicant();
+    data.profile.skills.programming = ['JavaScript'];
+    data = await saveVerifiedProfile(data.profile, data.revision, true);
+    const draft = createImportDraft(crypto.randomUUID(), '');
+    draft.candidate.skills.programming = ['TypeScript'];
+    draft.candidate.skills.cloud = ['AWS'];
+    draft.decisions['skills.cloud'] = 'exclude';
+    data = await saveImport(draft, data.revision);
+    data = await confirmImport(draft, data.revision, true);
+    expect(data.profile.skills.programming).toEqual([
+      'JavaScript',
+      'TypeScript',
+    ]);
+    expect(data.profile.skills.cloud).toEqual([]);
+  });
+  it('persists decisions in the unverified draft and ignores blank proposals', async () => {
+    let data = await getApplicant();
+    data.profile.personal.city = 'Saved City';
+    data = await saveVerifiedProfile(data.profile, data.revision, true);
+    const draft = createImportDraft(crypto.randomUUID(), '');
+    draft.candidate.personal.city = '';
+    draft.candidate.personal.country = 'Canada';
+    draft.decisions = {
+      'personal.city': 'use_proposed',
+      'personal.country': 'exclude',
+    };
+    data = await saveImport(draft, data.revision);
+    expect((await getApplicant()).imports[0]!.decisions).toEqual(
+      draft.decisions,
+    );
+    data = await confirmImport(data.imports[0]!, data.revision, true);
+    expect(data.profile.personal.city).toBe('Saved City');
+    expect(data.profile.personal.country).toBe('');
   });
   it('does not promote unrelated unverified legacy facts during import confirmation', async () => {
     const original = emptyApplicant();
@@ -433,7 +620,7 @@ describe('unverified imports', () => {
     storage = storageHarness({ [APPLICANT_KEY]: original });
     const draft = createImportDraft(crypto.randomUUID(), 'new@example.com');
     const data = await saveImport(draft, 0);
-    const saved = await confirmImport(draft, data.revision, true, false);
+    const saved = await confirmImport(draft, data.revision, true);
     expect(saved.profile.verification['personal.firstName']).toBeUndefined();
   });
   it('discarding an import leaves profile and other concepts untouched', async () => {

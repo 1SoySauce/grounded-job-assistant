@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type KeyboardEvent } from 'react';
 import {
   addResume,
   deleteResume,
@@ -15,12 +15,225 @@ import {
 import { createImportDraft } from '../../imports/extractCandidates';
 import {
   type ApplicantStore,
+  type ApplicantProfile,
+  type ImportDecision,
   type ImportDraft,
   facts,
+  findImportDuplicates,
+  contactValuesEquivalent,
+  initializeImportDecisions,
 } from '../../types/applicant';
 import { ProfileFields } from './ProfileFields';
 import { cleanLists, labelFor } from './editorUtils';
 import { toErrorMessage } from '../../utils/errors';
+
+function suggestionIsPresent(
+  candidate: ImportDraft['candidate'],
+  path: string,
+): boolean {
+  const [section, recordOrField, field] = path.split('.');
+  let value: unknown;
+  if (section === 'personal')
+    value =
+      candidate.personal[recordOrField as keyof typeof candidate.personal];
+  else if (section === 'skills')
+    value = candidate.skills[recordOrField as keyof typeof candidate.skills];
+  else if (
+    section === 'education' ||
+    section === 'employment' ||
+    section === 'projects' ||
+    section === 'certifications'
+  ) {
+    const record = candidate[section].find(
+      (entry) => entry.id === recordOrField,
+    );
+    value = record
+      ? (record as unknown as Record<string, unknown>)[field ?? '']
+      : undefined;
+  }
+  return Array.isArray(value) ? value.length > 0 : Boolean(value);
+}
+
+const historySections = [
+  'education',
+  'employment',
+  'projects',
+  'certifications',
+] as const;
+
+function historySectionLabel(section: (typeof historySections)[number]) {
+  return {
+    education: 'Education',
+    employment: 'Employment',
+    projects: 'Project',
+    certifications: 'Certification',
+  }[section];
+}
+
+function friendlyPathLabel(path: string, profile: ApplicantProfile): string {
+  const [section, recordOrField, field] = path.split('.');
+  if (section === 'personal') return labelFor(recordOrField ?? path);
+  if (section === 'skills')
+    return `Skills — ${labelFor(recordOrField ?? path)}`;
+  if (historySections.includes(section as (typeof historySections)[number])) {
+    const historySection = section as (typeof historySections)[number];
+    const index = profile[historySection].findIndex(
+      (entry) => entry.id === recordOrField,
+    );
+    return `${historySectionLabel(historySection)} ${Math.max(index, 0) + 1} — ${labelFor(field ?? 'entry')}`;
+  }
+  return labelFor(field ?? recordOrField ?? path);
+}
+
+function displayValue(value: unknown): string {
+  if (Array.isArray(value)) return value.join(', ');
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+  return String(value);
+}
+
+function recordSummary(
+  entry: { id: string } & Record<string, unknown>,
+): string {
+  return Object.entries(entry)
+    .filter(
+      ([key, value]) =>
+        key !== 'id' &&
+        value !== '' &&
+        value !== false &&
+        (!Array.isArray(value) || value.length > 0),
+    )
+    .map(([key, value]) => `${labelFor(key)}: ${displayValue(value)}`)
+    .join('\n');
+}
+
+type ReviewRow = {
+  key: string;
+  label: string;
+  saved: string;
+  proposed: string;
+  decision: ImportDecision;
+  choices?: Array<{ value: ImportDecision; label: string }>;
+  status?: string;
+};
+
+function scrollReviewTable(event: KeyboardEvent<HTMLDivElement>) {
+  if (
+    event.target !== event.currentTarget ||
+    (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight')
+  ) {
+    return;
+  }
+
+  event.preventDefault();
+  event.currentTarget.scrollLeft += event.key === 'ArrowLeft' ? -40 : 40;
+}
+
+function reviewRows(
+  draft: ImportDraft,
+  current: ApplicantProfile,
+): ReviewRow[] {
+  const rows: ReviewRow[] = [];
+  for (const key of Object.keys(draft.candidate.personal) as Array<
+    keyof ApplicantProfile['personal']
+  >) {
+    const proposed = draft.candidate.personal[key];
+    if (!proposed) continue;
+    const path = `personal.${key}`;
+    const saved = current.personal[key];
+    const equivalent =
+      Boolean(saved) && contactValuesEquivalent(key, saved, proposed);
+    rows.push({
+      key: path,
+      label: labelFor(key),
+      saved: saved || '(blank)',
+      proposed,
+      decision: draft.decisions[path]!,
+      ...(equivalent
+        ? { status: 'Equivalent — no change' }
+        : saved
+          ? {
+              choices: [
+                { value: 'keep_saved', label: 'Keep saved' },
+                { value: 'use_proposed', label: 'Use proposed' },
+              ],
+            }
+          : {
+              choices: [
+                { value: 'include', label: 'Include' },
+                { value: 'exclude', label: 'Exclude' },
+              ],
+            }),
+    });
+  }
+  const duplicates = findImportDuplicates(current, draft.candidate);
+  for (const section of historySections) {
+    for (const [index, entry] of draft.candidate[section].entries()) {
+      const path = `${section}.${entry.id}`;
+      const duplicate = duplicates.find(
+        (item) => item.section === section && item.candidateId === entry.id,
+      );
+      const savedEntry = duplicate
+        ? current[section].find((item) => item.id === duplicate.existingId)
+        : undefined;
+      rows.push({
+        key: path,
+        label: `${historySectionLabel(section)} ${index + 1}`,
+        saved: savedEntry
+          ? recordSummary(
+              savedEntry as typeof savedEntry & Record<string, unknown>,
+            )
+          : '(no matching saved record)',
+        proposed: recordSummary(
+          entry as typeof entry & Record<string, unknown>,
+        ),
+        decision: draft.decisions[path]!,
+        ...(duplicate?.kind === 'exact'
+          ? { status: 'Exact duplicate — skipped' }
+          : duplicate?.kind === 'possible'
+            ? {
+                choices: [
+                  { value: 'exclude', label: 'Exclude' },
+                  {
+                    value: 'approve_separate',
+                    label: 'Add as separate record',
+                  },
+                ],
+              }
+            : {
+                choices: [
+                  { value: 'include', label: 'Include' },
+                  { value: 'exclude', label: 'Exclude' },
+                ],
+              }),
+      });
+    }
+  }
+  for (const key of Object.keys(draft.candidate.skills) as Array<
+    keyof ApplicantProfile['skills']
+  >) {
+    const proposed = draft.candidate.skills[key];
+    if (!proposed.length) continue;
+    const path = `skills.${key}`;
+    const saved = current.skills[key];
+    const hasNewSkill = proposed.some((skill) => !saved.includes(skill));
+    rows.push({
+      key: path,
+      label: `Skills — ${labelFor(key)}`,
+      saved: saved.length ? saved.join(', ') : '(blank)',
+      proposed: proposed.join(', '),
+      decision: draft.decisions[path]!,
+      ...(hasNewSkill
+        ? {
+            choices: [
+              { value: 'include', label: 'Include' },
+              { value: 'exclude', label: 'Exclude' },
+            ],
+          }
+        : { status: 'Equivalent — no change' }),
+    });
+  }
+  return rows;
+}
 
 function ResumeCard({
   resume,
@@ -105,25 +318,31 @@ function ReviewDraft({
   busy: boolean;
   onDirty: (dirty: boolean) => void;
 }) {
-  const [edited, setEdited] = useState(draft);
+  const [edited, setEdited] = useState(() => ({
+    ...draft,
+    decisions: initializeImportDecisions(
+      data.profile,
+      draft.candidate,
+      draft.decisions,
+    ),
+  }));
   const [confirmed, setConfirmed] = useState(false);
-  const [replace, setReplace] = useState(false);
-  const incoming = facts(edited.candidate);
-  const conflicts = Object.entries(edited.candidate.personal).filter(
-    ([key, value]) =>
-      value &&
-      data.profile.personal[key as keyof typeof data.profile.personal] &&
-      data.profile.personal[key as keyof typeof data.profile.personal] !==
-        value,
-  );
+  const rows = reviewRows(edited, data.profile);
+  function changeDecision(path: string, decision: ImportDecision) {
+    setEdited((current) => ({
+      ...current,
+      decisions: { ...current.decisions, [path]: decision },
+    }));
+    setConfirmed(false);
+    onDirty(true);
+  }
   return (
     <section className="import-review">
       <h2>Unverified import review</h2>
       <p>
-        Nothing here is verified yet. Edit or remove suggestions, and enter
-        history from the extracted text. Only nonempty contact fields are
-        copied; history entries are appended and skills are combined. Review
-        existing history to avoid duplicates.
+        Nothing here is verified yet. Review the parser's confidence and source
+        text, then edit or remove anything that is not accurate. Exact duplicate
+        history is skipped; possible duplicates require separate approval.
       </p>
       <details open>
         <summary>Extracted resume text</summary>
@@ -133,12 +352,58 @@ function ReviewDraft({
         </pre>
       </details>
       <fieldset disabled={busy}>
+        <div className="suggestion-groups" aria-label="Detected suggestions">
+          {[
+            'Header',
+            'Education',
+            'Employment',
+            'Projects',
+            'Skills',
+            'Certifications',
+          ].map((section) => {
+            const suggestions = edited.suggestions.filter(
+              (suggestion) =>
+                suggestion.sourceSection === section &&
+                suggestionIsPresent(edited.candidate, suggestion.path),
+            );
+            if (!suggestions.length) return null;
+            return (
+              <section className="suggestion-group" key={section}>
+                <h3>{section === 'Header' ? 'Contact' : section}</h3>
+                <p className="unverified-label">UNVERIFIED</p>
+                <ul>
+                  {suggestions.map((suggestion, index) => (
+                    <li key={`${suggestion.path}-${index}`}>
+                      <strong>
+                        {friendlyPathLabel(suggestion.path, edited.candidate)}
+                      </strong>{' '}
+                      <span
+                        className={`confidence confidence--${suggestion.confidence}`}
+                      >
+                        {suggestion.confidence}{' '}
+                        {Math.round(suggestion.score * 100)}%
+                      </span>
+                      <small>From: “{suggestion.sourceText}”</small>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            );
+          })}
+        </div>
         <ProfileFields
           value={edited.candidate}
           onChange={(candidate) => {
-            setEdited({ ...edited, candidate });
+            setEdited({
+              ...edited,
+              candidate,
+              decisions: initializeImportDecisions(
+                data.profile,
+                candidate,
+                edited.decisions,
+              ),
+            });
             setConfirmed(false);
-            setReplace(false);
             onDirty(true);
           }}
         />
@@ -147,7 +412,7 @@ function ReviewDraft({
           <dl>
             {Object.entries(facts(data.profile)).map(([path, value]) => (
               <div key={path}>
-                <dt>{path}</dt>
+                <dt>{friendlyPathLabel(path, data.profile)}</dt>
                 <dd>
                   {Array.isArray(value) ? value.join(', ') : String(value)}
                 </dd>
@@ -157,56 +422,65 @@ function ReviewDraft({
         </details>
         <h3>Changes to your profile</h3>
         <p>
-          {Object.keys(incoming).length} nonempty fields proposed. Blank
-          imported fields do not erase existing values.
+          {rows.length} proposed changes or comparisons. Blank imported fields
+          do not erase existing values. Each decision below controls only that
+          field, record, or skill category.
         </p>
-        <div className="table-scroll">
-          <table>
+        <div
+          className="table-scroll review-table-scroll"
+          role="region"
+          aria-label="Profile change decisions"
+          tabIndex={0}
+          onKeyDown={scrollReviewTable}
+        >
+          <table className="review-table">
+            <colgroup>
+              <col className="review-table__field" />
+              <col className="review-table__saved" />
+              <col className="review-table__proposed" />
+              <col className="review-table__decision" />
+            </colgroup>
             <thead>
               <tr>
                 <th>Field / entry</th>
                 <th>Saved value</th>
                 <th>Proposed value</th>
+                <th>Decision</th>
               </tr>
             </thead>
             <tbody>
-              {Object.entries(incoming).map(([path, value]) => (
-                <tr key={path}>
-                  <td>{path}</td>
-                  <td>
-                    {path.startsWith('personal.')
-                      ? String(
-                          data.profile.personal[
-                            path.slice(9) as keyof typeof data.profile.personal
-                          ] || '(blank)',
-                        )
-                      : 'Append / combine with existing history or skills'}
-                  </td>
-                  <td>
-                    {Array.isArray(value) ? value.join(', ') : String(value)}
+              {rows.map((row) => (
+                <tr key={row.key}>
+                  <th scope="row">{row.label}</th>
+                  <td className="review-value">{row.saved}</td>
+                  <td className="review-value">{row.proposed}</td>
+                  <td className="review-decision">
+                    {row.choices ? (
+                      <select
+                        aria-label={`Decision for ${row.label}`}
+                        value={row.decision}
+                        onChange={(event) =>
+                          changeDecision(
+                            row.key,
+                            event.target.value as ImportDecision,
+                          )
+                        }
+                      >
+                        {row.choices.map((choice) => (
+                          <option key={choice.value} value={choice.value}>
+                            {choice.label}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <span className="review-status">{row.status}</span>
+                    )}
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
-        {conflicts.length > 0 && (
-          <>
-            <p role="alert">
-              Contact conflicts:{' '}
-              {conflicts.map(([key]) => labelFor(key)).join(', ')}. Saved values
-              appear in the comparison above.
-            </p>
-            <label className="check-label">
-              <input
-                type="checkbox"
-                checked={replace}
-                onChange={(event) => setReplace(event.target.checked)}
-              />
-              Replace the conflicting saved contact values shown above.
-            </label>
-          </>
-        )}
         <label className="check-label review-confirm">
           <input
             type="checkbox"
@@ -229,15 +503,10 @@ function ReviewDraft({
           <button
             type="button"
             className="button button--primary"
-            disabled={!confirmed || (conflicts.length > 0 && !replace)}
+            disabled={!confirmed}
             onClick={() =>
               onSave(() =>
-                confirmImport(
-                  cleanLists(edited),
-                  data.revision,
-                  confirmed,
-                  replace,
-                ),
+                confirmImport(cleanLists(edited), data.revision, confirmed),
               )
             }
           >

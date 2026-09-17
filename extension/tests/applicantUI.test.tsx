@@ -129,13 +129,23 @@ describe('applicant settings UI', () => {
       target: { value: 'Analyst\nSupport' },
     });
     fireEvent.click(screen.getByRole('checkbox', { name: 'remote' }));
-    change('Minimum Salary', '50000');
-    change('Desired Salary', '40000');
-    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
-    await screen.findByRole('alert');
-    expect((await getApplicant()).preferences.minimumSalary).toBeNull();
+    change('Minimum Salary', '70000');
     change('Desired Salary', '60000');
-    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    const savePreferences = screen.getByRole('button', {
+      name: 'Save changes',
+    });
+    fireEvent.click(savePreferences);
+    const salaryAlert = await screen.findByRole('alert');
+    expect(salaryAlert).toHaveTextContent(
+      'Desired salary must be at least the minimum salary.',
+    );
+    expect(salaryAlert.parentElement).toHaveClass('editor-controls');
+    expect(salaryAlert.nextElementSibling).toBe(savePreferences);
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    expect((await getApplicant()).preferences.minimumSalary).toBeNull();
+    change('Desired Salary', '80000');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    fireEvent.click(savePreferences);
     await screen.findByText('Saved locally.');
     expect((await getApplicant()).preferences.desiredTitles).toEqual([
       'Analyst',
@@ -144,6 +154,20 @@ describe('applicant settings UI', () => {
     expect((await getApplicant()).preferences.workplacePreferences).toEqual([
       'remote',
     ]);
+    expect((await getApplicant()).preferences.minimumSalary).toBe(70000);
+
+    change('Minimum Salary', '-1');
+    fireEvent.click(savePreferences);
+    const negativeSalaryAlert = await screen.findByRole('alert');
+    expect(negativeSalaryAlert).toHaveTextContent(
+      'Minimum Salary must be zero or greater.',
+    );
+    expect(negativeSalaryAlert.parentElement).toHaveClass('editor-controls');
+    expect(negativeSalaryAlert.nextElementSibling).toBe(savePreferences);
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    expect((await getApplicant()).preferences.minimumSalary).toBe(70000);
+    change('Minimum Salary', '75000');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
   it('defaults new answers to always ask and blocks demographic generation on save', async () => {
     render(<ApplicantEditor section="Answer Library" onDirty={() => {}} />);
@@ -173,6 +197,47 @@ describe('applicant settings UI', () => {
     expect((await getApplicant()).answers[0]!.value).toBe(
       'Prefer not to answer',
     );
+  });
+  it('shows a duplicate-question error and saves after the question is corrected', async () => {
+    render(<ApplicantEditor section="Answer Library" onDirty={() => {}} />);
+    const add = await screen.findByRole('button', { name: 'Add answer' });
+    fireEvent.click(add);
+    fireEvent.click(add);
+    const questions = screen.getAllByLabelText('Question', { exact: true });
+    fireEvent.change(questions[0]!, {
+      target: { value: 'Are you authorized to work?' },
+    });
+    fireEvent.change(questions[1]!, {
+      target: { value: '  ARE YOU AUTHORIZED TO WORK?  ' },
+    });
+    fireEvent.click(
+      screen.getByRole('checkbox', { name: /I reviewed these values/ }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(
+      'That question already exists in your Answer Library.',
+    );
+    const confirmation = screen
+      .getByRole('checkbox', { name: /I reviewed these values/ })
+      .closest('label');
+    expect(alert.parentElement).toHaveClass('editor-controls');
+    expect(alert.nextElementSibling).toBe(confirmation);
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    expect((await getApplicant()).answers).toEqual([]);
+
+    fireEvent.change(questions[1]!, {
+      target: { value: 'Will you require sponsorship?' },
+    });
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole('checkbox', { name: /I reviewed these values/ }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await screen.findByText('Saved locally.');
+    expect(
+      (await getApplicant()).answers.map(({ question }) => question),
+    ).toEqual(['Are you authorized to work?', 'Will you require sponsorship?']);
   });
   it('shows unverified extracted text, supports draft saves, and requires separate confirmation', async () => {
     const draft = createImportDraft(
@@ -212,9 +277,11 @@ describe('applicant settings UI', () => {
   it('keeps corrupted data visible as an error and disables editing', async () => {
     storageHarness({ [APPLICANT_KEY]: { schemaVersion: 999 } });
     render(<ApplicantEditor section="My Profile" onDirty={() => {}} />);
-    expect(await screen.findByRole('alert')).toHaveTextContent(
-      /No data was changed/,
-    );
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/No data was changed/);
+    expect(alert.parentElement).toHaveClass('panel', 'editor-panel');
+    expect(alert.previousElementSibling).toHaveTextContent('My Profile');
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
     expect(
       screen.queryByRole('button', { name: 'Save verified profile' }),
     ).not.toBeInTheDocument();

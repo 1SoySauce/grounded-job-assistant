@@ -33,6 +33,7 @@ export const EducationEntrySchema = z.object({
   degree: text(200),
   major: text(200),
   concentration: text(200),
+  minor: text(200).default(''),
   gpa: text(30),
   startDate: text(30),
   graduationDate: text(30),

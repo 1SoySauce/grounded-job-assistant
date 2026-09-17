@@ -90,6 +90,7 @@ const entryDefaults = {
     degree: '',
     major: '',
     concentration: '',
+    minor: '',
     gpa: '',
     startDate: '',
     graduationDate: '',

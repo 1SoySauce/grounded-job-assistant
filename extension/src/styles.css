@@ -124,22 +124,127 @@
   background: #f1f4ee;
 }
 .table-scroll {
-  overflow: auto;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+.review-table-scroll {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.review-table-scroll:focus-visible {
+  outline: 3px solid var(--blue-bright);
+  outline-offset: 2px;
 }
 .import-review table {
   width: 100%;
   border-collapse: collapse;
   font-size: 0.8rem;
 }
+.import-review .review-table {
+  min-width: 52rem;
+  table-layout: fixed;
+}
+.review-table__field {
+  width: 19%;
+}
+.review-table__saved {
+  width: 24%;
+}
+.review-table__proposed {
+  width: 35%;
+}
+.review-table__decision {
+  width: 22%;
+}
 .import-review td,
 .import-review th {
-  padding: 10px;
+  padding: 8px 10px;
   border: 1px solid var(--line);
   text-align: left;
   overflow-wrap: anywhere;
+  vertical-align: top;
+}
+.review-table th[scope='row'] {
+  overflow-wrap: normal;
+  word-break: normal;
+}
+.review-value {
+  white-space: pre-wrap;
+  word-break: normal;
+}
+.review-decision select {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+}
+.review-status {
+  display: inline-block;
+  color: var(--muted);
+  font-weight: 700;
+  line-height: 1.35;
+}
+.suggestion-groups {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.suggestion-group {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px;
+  background: var(--surface-soft);
+}
+.suggestion-group h3,
+.suggestion-group p {
+  margin-bottom: 6px;
+}
+.suggestion-group ul {
+  margin: 10px 0 0;
+  padding-left: 18px;
+}
+.suggestion-group li {
+  margin-bottom: 9px;
+  overflow-wrap: anywhere;
+}
+.suggestion-group small {
+  display: block;
+  margin-top: 3px;
+}
+.unverified-label {
+  color: var(--amber);
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+.confidence {
+  border-radius: 999px;
+  padding: 2px 7px;
+  font-size: 0.68rem;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+.confidence--high {
+  color: var(--green);
+  background: var(--green-bright);
+}
+.confidence--medium,
+.confidence--low {
+  color: var(--amber);
+  background: var(--amber-soft);
+}
+.duplicate-warning {
+  margin: 14px 0;
+  border: 1px solid #e3bd76;
+  border-radius: 10px;
+  padding: 14px;
+  background: var(--amber-soft);
 }
 @media (max-width: 850px) {
   .editor-grid {
+    grid-template-columns: 1fr;
+  }
+  .suggestion-groups {
     grid-template-columns: 1fr;
   }
   .sidebar nav {
