@@ -133,6 +133,7 @@ export function scanPage(document: Document, url: string): PageScanResult {
     fieldCount: signals.fieldCount,
     formCount: signals.formCount,
     hasJobPostingStructuredData: signals.hasJobPostingStructuredData,
+    jobPosting: null,
     scannedAt: new Date().toISOString(),
   };
 }
