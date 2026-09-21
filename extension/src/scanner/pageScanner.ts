@@ -1,4 +1,5 @@
 import type { AtsProvider, PageScanResult, PageType } from '../types/scanner';
+import { extractJsonLdJobPosting } from './jsonLdJobPosting';
 
 export interface PageSignals {
   url: string;
@@ -123,7 +124,13 @@ export function collectPageSignals(
 }
 
 export function scanPage(document: Document, url: string): PageScanResult {
+  const scannedAt = new Date().toISOString();
   const signals = collectPageSignals(document, url);
+  const jobPosting = extractJsonLdJobPosting(
+    document,
+    url,
+    scannedAt,
+  ).jobPosting;
 
   return {
     pageType: classifyPage(signals),
@@ -133,7 +140,7 @@ export function scanPage(document: Document, url: string): PageScanResult {
     fieldCount: signals.fieldCount,
     formCount: signals.formCount,
     hasJobPostingStructuredData: signals.hasJobPostingStructuredData,
-    jobPosting: null,
-    scannedAt: new Date().toISOString(),
+    jobPosting,
+    scannedAt,
   };
 }

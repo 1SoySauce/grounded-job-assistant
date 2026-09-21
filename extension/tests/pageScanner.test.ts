@@ -81,4 +81,26 @@ describe('page scanner foundations', () => {
     });
     expect(PageScanResultSchema.safeParse(result).success).toBe(true);
   });
+
+  it('keeps the coarse structured-data signal independent from extraction', () => {
+    document.head.innerHTML = '';
+    document.body.innerHTML = '';
+    const script = document.createElement('script');
+    script.type = 'application/ld+json';
+    script.textContent = JSON.stringify({
+      '@type': ['Thing', 'JobPosting'],
+      title: 'Array-typed role',
+      url: 'https://careers.example.test/jobs/array-typed-role',
+    });
+    document.head.append(script);
+
+    const result = scanPage(
+      document,
+      'https://careers.example.test/jobs/array-typed-role',
+    );
+
+    expect(result.hasJobPostingStructuredData).toBe(false);
+    expect(result.pageType).toBe('unrelated');
+    expect(result.jobPosting?.title.value).toBe('Array-typed role');
+  });
 });
