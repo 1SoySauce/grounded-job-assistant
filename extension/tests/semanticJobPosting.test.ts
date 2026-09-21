@@ -248,12 +248,12 @@ describe('semantic JobPosting extraction', () => {
   it('does not fall back to arbitrary generic DOM text', () => {
     loadFixture('generic-dom-only.html');
 
-    const result = scanPage(
+    const result = extractSemanticJobPosting(
       document,
       'https://careers.example.test/jobs/operations-data-specialist',
+      extractedAt,
     );
 
-    expect(result.pageType).toBe('job_posting');
-    expect(result.jobPosting).toBeNull();
+    expect(result).toBeNull();
   });
 });
