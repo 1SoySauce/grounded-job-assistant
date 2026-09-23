@@ -26,6 +26,7 @@ import {
 import { ProfileFields } from './ProfileFields';
 import { cleanLists, labelFor } from './editorUtils';
 import { toErrorMessage } from '../../utils/errors';
+import { Icon } from '../../components/Icon';
 
 function suggestionIsPresent(
   candidate: ImportDraft['candidate'],
@@ -112,6 +113,7 @@ type ReviewRow = {
   saved: string;
   proposed: string;
   decision: ImportDecision;
+  kind: 'new' | 'conflict' | 'unchanged' | 'duplicate' | 'possible-duplicate';
   choices?: Array<{ value: ImportDecision; label: string }>;
   status?: string;
 };
@@ -148,6 +150,7 @@ function reviewRows(
       saved: saved || '(blank)',
       proposed,
       decision: draft.decisions[path]!,
+      kind: equivalent ? 'unchanged' : saved ? 'conflict' : 'new',
       ...(equivalent
         ? { status: 'Equivalent — no change' }
         : saved
@@ -187,6 +190,12 @@ function reviewRows(
           entry as typeof entry & Record<string, unknown>,
         ),
         decision: draft.decisions[path]!,
+        kind:
+          duplicate?.kind === 'exact'
+            ? 'duplicate'
+            : duplicate?.kind === 'possible'
+              ? 'possible-duplicate'
+              : 'new',
         ...(duplicate?.kind === 'exact'
           ? { status: 'Exact duplicate — skipped' }
           : duplicate?.kind === 'possible'
@@ -222,6 +231,7 @@ function reviewRows(
       saved: saved.length ? saved.join(', ') : '(blank)',
       proposed: proposed.join(', '),
       decision: draft.decisions[path]!,
+      kind: hasNewSkill ? 'new' : 'unchanged',
       ...(hasNewSkill
         ? {
             choices: [
@@ -234,6 +244,22 @@ function reviewRows(
   }
   return rows;
 }
+
+const reviewKindLabels: Record<ReviewRow['kind'], string> = {
+  new: 'New information',
+  conflict: 'Conflicting value',
+  unchanged: 'Already saved',
+  duplicate: 'Exact duplicate',
+  'possible-duplicate': 'Possible duplicate',
+};
+
+const decisionDescriptions: Record<ImportDecision, string> = {
+  include: 'Included when you confirm.',
+  exclude: 'Excluded from this import.',
+  keep_saved: 'Your saved value will stay.',
+  use_proposed: 'Replaces the saved value when confirmed.',
+  approve_separate: 'Adds a separate record when confirmed.',
+};
 
 function ResumeCard({
   resume,
@@ -249,26 +275,40 @@ function ResumeCard({
   const [remove, setRemove] = useState(false);
   return (
     <article className="resume-card" onChange={onDirty}>
-      <h2>{resume.displayName}</h2>
-      <p>
-        {resume.fileName} · {(resume.size / 1024).toFixed(1)} KB ·{' '}
-        {resume.mimeType === 'application/pdf' ? 'PDF' : 'DOCX'}
-      </p>
-      <p>
+      <header className="resume-card__header">
+        <span className="resume-card__icon">
+          <Icon name="file" />
+        </span>
+        <div>
+          <h3>{resume.displayName}</h3>
+          <p className="resume-card__meta">
+            {resume.fileName} · {(resume.size / 1024).toFixed(1)} KB
+          </p>
+        </div>
+        <span className="status-pill status-pill--neutral">
+          {resume.mimeType === 'application/pdf' ? 'PDF' : 'DOCX'}
+        </span>
+      </header>
+      <p className="resume-card__meta">
         Added {new Date(resume.createdAt).toLocaleDateString()} · File stored
         locally; it is not verified profile data.
       </p>
-      <label>
-        Resume name
-        <input value={name} onChange={(event) => setName(event.target.value)} />
-      </label>
-      <label>
-        Intended job categories (one per line)
-        <textarea
-          value={roles}
-          onChange={(event) => setRoles(event.target.value)}
-        />
-      </label>
+      <div className="resume-card__fields">
+        <label>
+          Resume name
+          <input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+          />
+        </label>
+        <label>
+          Intended job categories (one per line)
+          <textarea
+            value={roles}
+            onChange={(event) => setRoles(event.target.value)}
+          />
+        </label>
+      </div>
       <button
         type="button"
         className="button button--secondary"
@@ -283,25 +323,33 @@ function ResumeCard({
           )
         }
       >
+        <Icon name="check" />
         Save resume metadata
       </button>
-      <label className="check-label">
-        <input
-          type="checkbox"
-          checked={remove}
-          onChange={(event) => setRemove(event.target.checked)}
-        />
-        Delete this file and metadata. Existing profile data and review drafts
-        will remain.
-      </label>
-      <button
-        type="button"
-        className="button button--secondary"
-        disabled={!remove}
-        onClick={() => onAction(() => deleteResume(resume.id, resume.revision))}
-      >
-        Delete resume
-      </button>
+      <div className="resume-card__delete">
+        <label className="check-label">
+          <input
+            type="checkbox"
+            checked={remove}
+            onChange={(event) => setRemove(event.target.checked)}
+          />
+          <span>
+            Delete this file and metadata. Existing profile data and review
+            drafts will remain.
+          </span>
+        </label>
+        <button
+          type="button"
+          className="button button--danger"
+          disabled={!remove}
+          onClick={() =>
+            onAction(() => deleteResume(resume.id, resume.revision))
+          }
+        >
+          <Icon name="trash" />
+          Delete resume
+        </button>
+      </div>
     </article>
   );
 }
@@ -328,6 +376,15 @@ function ReviewDraft({
   }));
   const [confirmed, setConfirmed] = useState(false);
   const rows = reviewRows(edited, data.profile);
+  const selectedCount = rows.filter(
+    (row) =>
+      row.choices &&
+      ['include', 'use_proposed', 'approve_separate'].includes(row.decision),
+  ).length;
+  const excludedCount = rows.filter(
+    (row) => row.choices && row.decision === 'exclude',
+  ).length;
+  const retainedCount = rows.length - selectedCount - excludedCount;
   function changeDecision(path: string, decision: ImportDecision) {
     setEdited((current) => ({
       ...current,
@@ -338,12 +395,30 @@ function ReviewDraft({
   }
   return (
     <section className="import-review">
-      <h2>Unverified import review</h2>
-      <p>
-        Nothing here is verified yet. Review the parser's confidence and source
-        text, then edit or remove anything that is not accurate. Exact duplicate
-        history is skipped; possible duplicates require separate approval.
+      <header className="import-review__header">
+        <div>
+          <p className="eyebrow">YOUR PROFILE, YOUR DECISIONS</p>
+          <h2>Unverified import review</h2>
+        </div>
+        <span className="status-pill status-pill--warning">
+          <Icon name="shield" />
+          Unverified draft
+        </span>
+      </header>
+      <p className="review-note">
+        Nothing here is verified yet. Review the confidence and source text,
+        then edit anything that is not accurate. Your saved profile changes only
+        after you confirm this import.
       </p>
+      <div className="review-step">
+        <span className="review-step__number" aria-hidden="true">
+          01
+        </span>
+        <div>
+          <h3>Check the source</h3>
+          <p>Compare detected information with the original resume text.</p>
+        </div>
+      </div>
       <details open>
         <summary>Extracted resume text</summary>
         <pre className="resume-text">
@@ -369,8 +444,10 @@ function ReviewDraft({
             if (!suggestions.length) return null;
             return (
               <section className="suggestion-group" key={section}>
-                <h3>{section === 'Header' ? 'Contact' : section}</h3>
-                <p className="unverified-label">UNVERIFIED</p>
+                <header className="suggestion-group__header">
+                  <h3>{section === 'Header' ? 'Contact' : section}</h3>
+                  <span className="unverified-label">UNVERIFIED</span>
+                </header>
                 <ul>
                   {suggestions.map((suggestion, index) => (
                     <li key={`${suggestion.path}-${index}`}>
@@ -383,13 +460,26 @@ function ReviewDraft({
                         {suggestion.confidence}{' '}
                         {Math.round(suggestion.score * 100)}%
                       </span>
-                      <small>From: “{suggestion.sourceText}”</small>
+                      <small className="suggestion-source">
+                        From: “{suggestion.sourceText}”
+                      </small>
                     </li>
                   ))}
                 </ul>
               </section>
             );
           })}
+        </div>
+        <div className="review-step">
+          <span className="review-step__number" aria-hidden="true">
+            02
+          </span>
+          <div>
+            <h3>Refine proposed information</h3>
+            <p>
+              Edit or remove extracted values before choosing what to import.
+            </p>
+          </div>
         </div>
         <ProfileFields
           value={edited.candidate}
@@ -420,11 +510,42 @@ function ReviewDraft({
             ))}
           </dl>
         </details>
-        <h3>Changes to your profile</h3>
-        <p>
+        <div className="review-step">
+          <span className="review-step__number" aria-hidden="true">
+            03
+          </span>
+          <div>
+            <h3>Changes to your profile</h3>
+            <p>Compare saved and proposed values, then review each decision.</p>
+          </div>
+        </div>
+        <div
+          className="review-overview"
+          role="group"
+          aria-label="Current import selections"
+        >
+          <div className="review-metric">
+            <strong className="review-metric__value">{selectedCount}</strong>
+            <span className="review-metric__label">Selected for import</span>
+          </div>
+          <div className="review-metric">
+            <strong className="review-metric__value">{retainedCount}</strong>
+            <span className="review-metric__label">Saved or unchanged</span>
+          </div>
+          <div className="review-metric">
+            <strong className="review-metric__value">{excludedCount}</strong>
+            <span className="review-metric__label">Excluded</span>
+          </div>
+        </div>
+        <p className="review-note">
           {rows.length} proposed changes or comparisons. Blank imported fields
           do not erase existing values. Each decision below controls only that
           field, record, or skill category.
+        </p>
+        <p className="review-note">
+          These counts reflect the current selections, including defaults. Exact
+          duplicate history is skipped; possible duplicates require separate
+          approval. Review every selection before confirming.
         </p>
         <div
           className="table-scroll review-table-scroll"
@@ -442,36 +563,57 @@ function ReviewDraft({
             </colgroup>
             <thead>
               <tr>
-                <th>Field / entry</th>
-                <th>Saved value</th>
-                <th>Proposed value</th>
-                <th>Decision</th>
+                <th scope="col">Field / entry</th>
+                <th scope="col" className="review-value--saved">
+                  Saved value
+                </th>
+                <th scope="col" className="review-value--proposed">
+                  Proposed value
+                </th>
+                <th scope="col">Decision</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((row) => (
-                <tr key={row.key}>
-                  <th scope="row">{row.label}</th>
-                  <td className="review-value">{row.saved}</td>
-                  <td className="review-value">{row.proposed}</td>
+                <tr
+                  key={row.key}
+                  className={`review-row--${row.kind} review-row--decision-${row.decision}`}
+                >
+                  <th scope="row">
+                    {row.label}
+                    <span className={`review-kind review-kind--${row.kind}`}>
+                      {reviewKindLabels[row.kind]}
+                    </span>
+                  </th>
+                  <td className="review-value review-value--saved">
+                    {row.saved}
+                  </td>
+                  <td className="review-value review-value--proposed">
+                    {row.proposed}
+                  </td>
                   <td className="review-decision">
                     {row.choices ? (
-                      <select
-                        aria-label={`Decision for ${row.label}`}
-                        value={row.decision}
-                        onChange={(event) =>
-                          changeDecision(
-                            row.key,
-                            event.target.value as ImportDecision,
-                          )
-                        }
-                      >
-                        {row.choices.map((choice) => (
-                          <option key={choice.value} value={choice.value}>
-                            {choice.label}
-                          </option>
-                        ))}
-                      </select>
+                      <>
+                        <select
+                          aria-label={`Decision for ${row.label}`}
+                          value={row.decision}
+                          onChange={(event) =>
+                            changeDecision(
+                              row.key,
+                              event.target.value as ImportDecision,
+                            )
+                          }
+                        >
+                          {row.choices.map((choice) => (
+                            <option key={choice.value} value={choice.value}>
+                              {choice.label}
+                            </option>
+                          ))}
+                        </select>
+                        <small className="review-decision__hint">
+                          {decisionDescriptions[row.decision]}
+                        </small>
+                      </>
                     ) : (
                       <span className="review-status">{row.status}</span>
                     )}
@@ -481,16 +623,31 @@ function ReviewDraft({
             </tbody>
           </table>
         </div>
-        <label className="check-label review-confirm">
+        {rows.length === 0 && (
+          <p className="notice">
+            No proposed values yet. Add information above to review it here.
+          </p>
+        )}
+        <label
+          className={`check-label review-confirm${confirmed ? ' review-confirm--checked' : ''}`}
+        >
           <input
             type="checkbox"
             checked={confirmed}
             onChange={(event) => setConfirmed(event.target.checked)}
           />
-          I reviewed the extracted information and proposed changes. Verify and
-          add these facts to my profile.
+          <span>
+            I reviewed the extracted information and proposed changes. Verify
+            and add these facts to my profile.
+          </span>
         </label>
-        <div className="editor-actions">
+        <p className="review-summary-status" role="status">
+          <Icon name={confirmed ? 'check' : 'shield'} />
+          {confirmed
+            ? 'Review confirmed. Ready to add your selected facts.'
+            : 'Confirm your review above to enable the import.'}
+        </p>
+        <div className="editor-actions review-actions">
           <button
             type="button"
             className="button button--secondary"
@@ -498,6 +655,7 @@ function ReviewDraft({
               onSave(() => saveImport(cleanLists(edited), data.revision))
             }
           >
+            <Icon name="file" />
             Save unverified draft
           </button>
           <button
@@ -510,11 +668,12 @@ function ReviewDraft({
               )
             }
           >
+            <Icon name="check" />
             Confirm import into profile
           </button>
           <button
             type="button"
-            className="button button--secondary"
+            className="button button--danger"
             onClick={() => {
               if (
                 window.confirm(
@@ -524,6 +683,7 @@ function ReviewDraft({
                 onSave(() => discardImport(draft.id, data.revision));
             }}
           >
+            <Icon name="trash" />
             Discard draft
           </button>
         </div>
@@ -600,30 +760,45 @@ export function Resumes({
   }
   return (
     <>
-      <p>
-        Store PDF and DOCX resumes up to 10 MB each. Extraction is local. Every
-        import starts unverified; saving a file never changes your profile.
-      </p>
+      <div className="resume-intro">
+        <span className="status-pill status-pill--info">
+          <Icon name="shield" />
+          Local extraction
+        </span>
+        <p>
+          Store PDF and DOCX resumes up to 10 MB each. Every import starts
+          unverified; saving a file never changes your profile.
+        </p>
+      </div>
       <fieldset
+        className="resume-upload"
         disabled={busy || review !== null}
         onChange={() => markDirty('upload', true)}
       >
         <legend>Add resume</legend>
-        <label>
-          New resume name
-          <input
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-          />
-        </label>
-        <label>
-          Intended job categories (one per line)
-          <textarea
-            value={roles}
-            onChange={(event) => setRoles(event.target.value)}
-          />
-        </label>
-        <label>
+        <div className="resume-upload__heading">
+          <Icon name="upload" />
+          <p>Add a resume, extract its information, and review what to keep.</p>
+        </div>
+        <div className="resume-upload__fields">
+          <label>
+            New resume name
+            <input
+              value={name}
+              placeholder="e.g. Product engineering resume"
+              onChange={(event) => setName(event.target.value)}
+            />
+          </label>
+          <label>
+            Intended job categories (one per line)
+            <textarea
+              value={roles}
+              placeholder="e.g. Software engineering"
+              onChange={(event) => setRoles(event.target.value)}
+            />
+          </label>
+        </div>
+        <label className="file-picker">
           PDF or DOCX file
           <input
             type="file"
@@ -631,6 +806,11 @@ export function Resumes({
             onChange={(event) => setFile(event.target.files?.[0] ?? null)}
           />
         </label>
+        <p className="file-picker__hint">
+          {file
+            ? `${file.name} · ${(file.size / 1024).toFixed(1)} KB selected`
+            : 'Choose a text-based PDF or DOCX file, up to 10 MB.'}
+        </p>
         <button
           type="button"
           className="button button--primary"
@@ -652,72 +832,169 @@ export function Resumes({
               });
           }}
         >
+          <Icon
+            name={busy ? 'loader' : 'upload'}
+            className={busy ? 'icon--spin' : undefined}
+          />
           Add resume and extract
         </button>
       </fieldset>
-      {busy && <p role="status">Working locally…</p>}
+      {busy && (
+        <p role="status" className="notice feedback">
+          <Icon name="loader" className="icon--spin" />
+          Working locally…
+        </p>
+      )}
       {error && (
         <p role="alert" className="notice notice--error">
+          <Icon name="alert" />
           {error}
         </p>
       )}
-      <p role="status">{message}</p>
-      <fieldset disabled={busy || review !== null} className="editor-controls">
-        {resumes.map((resume) => (
-          <div key={`${resume.id}-${resume.revision}`}>
-            <ResumeCard
-              resume={resume}
-              onDirty={() => markDirty(resume.id, true)}
-              onAction={(operation) => {
-                void action(async () => {
-                  await operation();
-                  markDirty(resume.id, false);
-                });
-              }}
-            />
-            <button
-              type="button"
-              className="button button--secondary"
-              disabled={data.imports.some(
-                (draft) => draft.resumeId === resume.id,
-              )}
-              onClick={() => {
-                void action(() => extract(resume));
-              }}
+      <p
+        role="status"
+        className={
+          message
+            ? 'notice notice--success feedback'
+            : 'feedback feedback--empty'
+        }
+      >
+        {message && <Icon name="check" />}
+        {message}
+      </p>
+      <div className="section-heading">
+        <div>
+          <h2>Resume library</h2>
+          <p className="section-heading__description">
+            Your original files, stored on this device.
+          </p>
+        </div>
+        <span
+          className="count-badge"
+          aria-label={`${resumes.length} saved resumes`}
+        >
+          {resumes.length}
+        </span>
+      </div>
+      {resumes.length === 0 && (
+        <div className="empty-state">
+          <span className="empty-state__icon">
+            <Icon name="file" />
+          </span>
+          <div>
+            <h3>Your resume library starts here</h3>
+            <p>
+              Add your first resume above to extract information for review.
+            </p>
+          </div>
+        </div>
+      )}
+      <fieldset
+        disabled={busy || review !== null}
+        className="editor-controls resume-library"
+      >
+        <div className="resume-library__grid">
+          {resumes.map((resume) => (
+            <div
+              key={`${resume.id}-${resume.revision}`}
+              className="resume-record"
             >
-              Extract for review: {resume.displayName}
-            </button>
+              <ResumeCard
+                resume={resume}
+                onDirty={() => markDirty(resume.id, true)}
+                onAction={(operation) => {
+                  void action(async () => {
+                    await operation();
+                    markDirty(resume.id, false);
+                  });
+                }}
+              />
+              <button
+                type="button"
+                className="button button--secondary resume-record__extract"
+                disabled={data.imports.some(
+                  (draft) => draft.resumeId === resume.id,
+                )}
+                onClick={() => {
+                  void action(() => extract(resume));
+                }}
+              >
+                <Icon name="scan" />
+                Extract for review: {resume.displayName}
+              </button>
+              {data.imports.some((draft) => draft.resumeId === resume.id) && (
+                <p className="resume-card__meta">
+                  An unverified draft is ready below.
+                </p>
+              )}
+            </div>
+          ))}
+        </div>
+      </fieldset>
+      <div className="section-heading">
+        <div>
+          <h2>Unverified drafts</h2>
+          <p className="section-heading__description">
+            Review extracted information before adding it to your profile.
+          </p>
+        </div>
+        <span
+          className="count-badge"
+          aria-label={`${data.imports.length} unverified drafts`}
+        >
+          {data.imports.length}
+        </span>
+      </div>
+      {data.imports.length === 0 && (
+        <div className="empty-state empty-state--compact">
+          <span className="empty-state__icon">
+            <Icon name="check" />
+          </span>
+          <div>
+            <h3>No pending imports.</h3>
+            <p>Extract a saved resume to start a new review.</p>
+          </div>
+        </div>
+      )}
+      <div className="draft-list">
+        {data.imports.map((draft) => (
+          <div key={draft.id}>
+            {review === draft.id ? (
+              <ReviewDraft
+                key={`${draft.id}-${data.revision}`}
+                draft={draft}
+                data={data}
+                onSave={saveReview}
+                busy={busy}
+                onDirty={(value) => markDirty('review', value)}
+              />
+            ) : (
+              <button
+                type="button"
+                className="button button--secondary draft-card"
+                disabled={busy || review !== null}
+                onClick={() => setReview(draft.id)}
+              >
+                <span className="resume-card__icon">
+                  <Icon name="file" />
+                </span>
+                <span className="draft-card__content">
+                  <span className="draft-card__title">
+                    Review unverified import:{' '}
+                    {resumes.find((resume) => resume.id === draft.resumeId)
+                      ?.displayName ?? 'Removed resume'}
+                  </span>
+                  <span className="draft-card__meta">
+                    Created {new Date(draft.createdAt).toLocaleDateString()} ·
+                    Requires your review
+                  </span>
+                </span>
+                <Icon name="arrow-right" />
+              </button>
+            )}
           </div>
         ))}
-      </fieldset>
-      <h2>Unverified drafts</h2>
-      {data.imports.length === 0 && <p>No pending imports.</p>}
-      {data.imports.map((draft) => (
-        <div key={draft.id}>
-          {review === draft.id ? (
-            <ReviewDraft
-              key={`${draft.id}-${data.revision}`}
-              draft={draft}
-              data={data}
-              onSave={saveReview}
-              busy={busy}
-              onDirty={(value) => markDirty('review', value)}
-            />
-          ) : (
-            <button
-              type="button"
-              className="button button--secondary"
-              disabled={busy || review !== null}
-              onClick={() => setReview(draft.id)}
-            >
-              Review unverified import:{' '}
-              {resumes.find((resume) => resume.id === draft.resumeId)
-                ?.displayName ?? 'Removed resume'}{' '}
-              ({new Date(draft.createdAt).toLocaleDateString()})
-            </button>
-          )}
-        </div>
-      ))}
+      </div>
     </>
   );
 }

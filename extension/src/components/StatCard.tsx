@@ -1,13 +1,19 @@
+import { Icon, type IconName } from './Icon';
+
 interface StatCardProps {
   label: string;
   value: string | number;
   detail: string;
+  icon?: IconName;
 }
 
-export function StatCard({ label, value, detail }: StatCardProps) {
+export function StatCard({ label, value, detail, icon }: StatCardProps) {
   return (
     <article className="stat-card">
-      <span>{label}</span>
+      <span className="stat-card__label">
+        {label}
+        {icon && <Icon name={icon} />}
+      </span>
       <strong>{value}</strong>
       <small>{detail}</small>
     </article>

@@ -1,4 +1,5 @@
 import type { ApplicantProfile } from '../../types/applicant';
+import { Icon } from '../../components/Icon';
 import { labelFor } from './editorUtils';
 export function ValueFields({
   value,
@@ -29,9 +30,19 @@ export function ValueFields({
             );
           const numeric = typeof field === 'number' || field === null;
           return (
-            <label key={key} htmlFor={inputId}>
+            <label
+              key={key}
+              htmlFor={inputId}
+              className={
+                ['description', 'question', 'value'].includes(key)
+                  ? 'field--wide'
+                  : undefined
+              }
+            >
               {label}
-              {Array.isArray(field) && <small>One item per line</small>}
+              {Array.isArray(field) && (
+                <small id={`${inputId}-hint`}>One item per line</small>
+              )}
               {Array.isArray(field) ||
               ['description', 'question', 'value'].includes(key) ? (
                 <textarea
@@ -125,6 +136,31 @@ const entryDefaults = {
     credentialId: '',
   },
 };
+const personalGroups = [
+  {
+    title: 'Name & contact',
+    fields: [
+      'firstName',
+      'middleName',
+      'lastName',
+      'preferredName',
+      'email',
+      'phone',
+    ],
+  },
+  { title: 'Location', fields: ['city', 'state', 'zip', 'country'] },
+  {
+    title: 'Online presence',
+    fields: ['linkedinUrl', 'githubUrl', 'portfolioUrl'],
+  },
+];
+const sectionDescriptions = {
+  education: 'Schools, qualifications, and the details of your education.',
+  employment: 'Your roles, responsibilities, and accomplishments.',
+  projects: 'The work you have built and the skills behind it.',
+  certifications:
+    'Credentials and professional certifications you have earned.',
+};
 export function ProfileFields({
   value,
   onChange,
@@ -134,28 +170,91 @@ export function ProfileFields({
 }) {
   return (
     <div className="profile-fields">
-      <fieldset>
+      <fieldset className="form-section">
         <legend>Personal / contact information</legend>
-        <ValueFields
-          prefix="personal"
-          value={value.personal}
-          onChange={(key, field) =>
-            onChange({
-              ...value,
-              personal: { ...value.personal, [key]: field },
-            })
-          }
-        />
+        <p className="form-section__description">
+          The details you want to use in your applications.
+        </p>
+        {personalGroups.map((group) => (
+          <div className="field-group" key={group.title}>
+            <h3 className="field-group__heading">{group.title}</h3>
+            <ValueFields
+              prefix="personal"
+              value={Object.fromEntries(
+                Object.entries(value.personal).filter(([key]) =>
+                  group.fields.includes(key),
+                ),
+              )}
+              onChange={(key, field) =>
+                onChange({
+                  ...value,
+                  personal: { ...value.personal, [key]: field },
+                })
+              }
+            />
+          </div>
+        ))}
       </fieldset>
       {(Object.keys(entryDefaults) as Array<keyof typeof entryDefaults>).map(
         (section) => (
-          <fieldset key={section}>
+          <fieldset key={section} className="form-section">
             <legend>{labelFor(section)}</legend>
+            <div className="record-heading">
+              <p className="form-section__description">
+                {sectionDescriptions[section]}
+              </p>
+              <span className="status-pill status-pill--neutral">
+                {value[section].length}{' '}
+                {value[section].length === 1 ? 'entry' : 'entries'}
+              </span>
+            </div>
+            {value[section].length === 0 && (
+              <div className="section-empty">
+                <span className="section-empty__icon">
+                  <Icon
+                    name={section === 'employment' ? 'briefcase' : 'file'}
+                  />
+                </span>
+                <div>
+                  <strong>
+                    No {labelFor(section).toLowerCase()} added yet
+                  </strong>
+                  <p>
+                    Add an entry when you are ready. Unknown details can stay
+                    blank.
+                  </p>
+                </div>
+              </div>
+            )}
             {value[section].map((entry, index) => (
               <fieldset className="history-entry" key={entry.id}>
                 <legend>
                   {labelFor(section)} {index + 1}
                 </legend>
+                <div className="record-heading">
+                  <h3 className="record-heading__title">
+                    {('institution' in entry && entry.institution) ||
+                      ('employer' in entry && entry.employer) ||
+                      ('name' in entry && entry.name) ||
+                      ('certification' in entry && entry.certification) ||
+                      'New entry'}
+                  </h3>
+                  <button
+                    type="button"
+                    className="button button--danger-ghost"
+                    onClick={() =>
+                      onChange({
+                        ...value,
+                        [section]: value[section].filter(
+                          (item) => item.id !== entry.id,
+                        ),
+                      })
+                    }
+                  >
+                    <Icon name="trash" />
+                    Remove {labelFor(section).toLowerCase()} {index + 1}
+                  </button>
+                </div>
                 <ValueFields
                   prefix={entry.id}
                   value={entry}
@@ -168,25 +267,11 @@ export function ProfileFields({
                     })
                   }
                 />
-                <button
-                  type="button"
-                  className="button button--secondary"
-                  onClick={() =>
-                    onChange({
-                      ...value,
-                      [section]: value[section].filter(
-                        (item) => item.id !== entry.id,
-                      ),
-                    })
-                  }
-                >
-                  Remove {labelFor(section).toLowerCase()} {index + 1}
-                </button>
               </fieldset>
             ))}
             <button
               type="button"
-              className="button button--secondary"
+              className="button button--secondary button--add"
               onClick={() =>
                 onChange({
                   ...value,
@@ -197,13 +282,18 @@ export function ProfileFields({
                 })
               }
             >
+              <Icon name="plus" />
               Add {labelFor(section).toLowerCase()}
             </button>
           </fieldset>
         ),
       )}
-      <fieldset>
+      <fieldset className="form-section">
         <legend>Skills</legend>
+        <p className="form-section__description">
+          Organize your skills by category. Add one skill per line and leave
+          unused categories blank.
+        </p>
         <ValueFields
           prefix="skills"
           value={value.skills}
@@ -213,6 +303,7 @@ export function ProfileFields({
         />
       </fieldset>
       <p className="editor-help">
+        <Icon name="clock" />
         Keep dates exactly as known (for example, 2024 or 2024-06). Leave
         unknown information blank.
       </p>
