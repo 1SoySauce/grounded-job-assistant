@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { JobPostingSchema } from './jobPosting';
 
 export const PageTypeSchema = z.enum([
   'job_posting',
@@ -27,6 +28,7 @@ export const PageScanResultSchema = z.object({
   fieldCount: z.number().int().nonnegative(),
   formCount: z.number().int().nonnegative(),
   hasJobPostingStructuredData: z.boolean(),
+  jobPosting: JobPostingSchema.nullable(),
   scannedAt: z.iso.datetime(),
 });
 

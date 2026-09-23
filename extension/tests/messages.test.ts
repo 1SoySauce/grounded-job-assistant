@@ -32,4 +32,24 @@ describe('runtime message validation', () => {
       }).success,
     ).toBe(false);
   });
+
+  it('accepts the expanded coarse scan response with no normalized posting', () => {
+    expect(
+      RuntimeResponseSchema.safeParse({
+        ok: true,
+        type: 'PAGE_SCAN',
+        data: {
+          pageType: 'job_posting',
+          ats: 'generic',
+          title: 'Platform Support Engineer',
+          url: 'https://careers.example.test/jobs/platform-support-engineer',
+          fieldCount: 0,
+          formCount: 0,
+          hasJobPostingStructuredData: true,
+          jobPosting: null,
+          scannedAt: '2026-09-17T12:00:00.000Z',
+        },
+      }).success,
+    ).toBe(true);
+  });
 });

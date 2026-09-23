@@ -1,5 +1,11 @@
+// @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
-import { classifyPage, detectAtsProvider } from '../src/scanner/pageScanner';
+import {
+  classifyPage,
+  detectAtsProvider,
+  scanPage,
+} from '../src/scanner/pageScanner';
+import { PageScanResultSchema } from '../src/types/scanner';
 
 describe('page scanner foundations', () => {
   it('detects known ATS hosts without relying on page CSS', () => {
@@ -51,5 +57,50 @@ describe('page scanner foundations', () => {
         hasJobPostingStructuredData: false,
       }),
     ).toBe('unrelated');
+  });
+
+  it('preserves the coarse scan and returns no normalized posting yet', () => {
+    document.title = 'Example careers page';
+    document.body.innerHTML = `
+      <main>
+        <h1>Example careers</h1>
+        <form><input name="query"><select name="team"></select></form>
+      </main>
+    `;
+    const result = scanPage(document, 'https://careers.example.test/jobs');
+
+    expect(result).toMatchObject({
+      pageType: 'unrelated',
+      ats: 'generic',
+      title: 'Example careers page',
+      url: 'https://careers.example.test/jobs',
+      fieldCount: 2,
+      formCount: 1,
+      hasJobPostingStructuredData: false,
+      jobPosting: null,
+    });
+    expect(PageScanResultSchema.safeParse(result).success).toBe(true);
+  });
+
+  it('keeps the coarse structured-data signal independent from extraction', () => {
+    document.head.innerHTML = '';
+    document.body.innerHTML = '';
+    const script = document.createElement('script');
+    script.type = 'application/ld+json';
+    script.textContent = JSON.stringify({
+      '@type': ['Thing', 'JobPosting'],
+      title: 'Array-typed role',
+      url: 'https://careers.example.test/jobs/array-typed-role',
+    });
+    document.head.append(script);
+
+    const result = scanPage(
+      document,
+      'https://careers.example.test/jobs/array-typed-role',
+    );
+
+    expect(result.hasJobPostingStructuredData).toBe(false);
+    expect(result.pageType).toBe('unrelated');
+    expect(result.jobPosting?.title.value).toBe('Array-typed role');
   });
 });
