@@ -285,7 +285,55 @@ describe('ARIA-assisted DOM JobPosting extraction', () => {
     );
   });
 
-  it('excludes navigation, header, footer, and aside content', () => {
+  it('extracts a title from a header nested in an article candidate', () => {
+    loadHtml(`
+      <article>
+        <header>
+          <h1>Platform Reliability Engineer</h1>
+        </header>
+        <h2>Responsibilities</h2>
+        <p>Maintain reliable platform services.</p>
+        <h2>Requirements</h2>
+        <p>Experience operating production systems.</p>
+      </article>
+    `);
+
+    const posting = extractDomJobPosting(
+      document,
+      'https://careers.example.test/jobs/platform-reliability-engineer',
+      extractedAt,
+    );
+
+    expect(posting?.title.value).toBe('Platform Reliability Engineer');
+    expect(posting?.title.provenance[0]?.source).toBe('dom_heading');
+  });
+
+  it('does not treat an article inside a page-level header as a candidate', () => {
+    loadHtml(`
+      <header>
+        <article>
+          <h1>Featured navigation role</h1>
+          <h2>Responsibilities</h2><p>Navigate featured roles.</p>
+          <h2>Requirements</h2><p>Browse available openings.</p>
+        </article>
+      </header>
+      <main>
+        <h1>Trusted root title</h1>
+        <h2>Responsibilities</h2><p>Trusted responsibilities.</p>
+        <h2>Requirements</h2><p>Trusted requirement.</p>
+      </main>
+    `);
+
+    const posting = extractDomJobPosting(
+      document,
+      'https://careers.example.test/jobs/trusted-root',
+      extractedAt,
+    );
+
+    expect(posting?.title.value).toBe('Trusted root title');
+  });
+
+  it('excludes page chrome and restricted nested regions', () => {
     loadHtml(`
       <header><h1>Header title</h1><p>Header company</p></header>
       <nav>Navigation company</nav>
@@ -297,6 +345,13 @@ describe('ARIA-assisted DOM JobPosting extraction', () => {
           <h1>Aside title</h1>
           <h2>Requirements</h2><p>Aside requirement.</p>
         </aside>
+        <nav><h1>Navigation title</h1></nav>
+        <footer><h1>Footer title</h1></footer>
+        <form><h1>Form title</h1></form>
+        <div hidden><h1>Hidden title</h1></div>
+        <div aria-hidden="true"><h1>ARIA-hidden title</h1></div>
+        <div role="dialog"><h1>Dialog title</h1></div>
+        <div role="complementary"><h1>Complementary title</h1></div>
         <h2>Responsibilities</h2><p>Trusted responsibilities.</p>
         <h2>Requirements</h2><p>Trusted requirement.</p>
       </main>

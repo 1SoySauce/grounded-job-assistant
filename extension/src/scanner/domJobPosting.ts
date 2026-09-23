@@ -45,7 +45,9 @@ interface DomCandidate {
 }
 
 const EXCLUDED_SELECTOR =
-  'nav, header, footer, aside, form, [hidden], [aria-hidden="true"], [role="navigation"], [role="complementary"], [role="dialog"]';
+  'nav, footer, aside, form, [hidden], [aria-hidden="true"], [role="navigation"], [role="complementary"], [role="dialog"]';
+
+const EXCLUDED_CANDIDATE_ROOT_SELECTOR = `header, ${EXCLUDED_SELECTOR}`;
 
 const SECTION_LABELS: Readonly<Record<string, SectionKind>> = {
   'about the role': 'description',
@@ -360,7 +362,7 @@ function candidates(document: Document): DomCandidate[] | null {
 
   const roots = Array.from(
     document.querySelectorAll<HTMLElement>('main, [role="main"], article'),
-  ).filter((root) => !root.closest(EXCLUDED_SELECTOR));
+  ).filter((root) => !root.closest(EXCLUDED_CANDIDATE_ROOT_SELECTOR));
   if (roots.length > DOM_JOB_POSTING_LIMITS.candidateRegions) {
     return null;
   }
