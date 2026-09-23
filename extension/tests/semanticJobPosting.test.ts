@@ -100,6 +100,7 @@ describe('semantic JobPosting extraction', () => {
 
     expect(posting?.title.value).toBe('Sparse semantic role');
     expect(posting?.company.value).toBeNull();
+    expect(posting?.company.conflicted).toBe(false);
     expect(posting?.location.value).toBeNull();
     expect(posting?.description.value).toBeNull();
     expect(posting?.description.conflicted).toBe(false);
@@ -142,7 +143,60 @@ describe('semantic JobPosting extraction', () => {
     );
 
     expect(posting?.title.value).toBe('Outer title');
-    expect(posting?.company.value).toBe('Example Organization');
+    expect(posting?.company).toMatchObject({
+      value: 'Example Organization',
+      conflicted: false,
+    });
+  });
+
+  it('preserves conflicts between nested organization names', () => {
+    loadHtml(`
+      <article itemscope itemtype="https://schema.org/JobPosting">
+        <h1 itemprop="title">Organization conflict role</h1>
+        <div itemprop="hiringOrganization" itemscope itemtype="https://schema.org/Organization">
+          <span itemprop="name">First Organization</span>
+          <meta itemprop="name" content="Second Organization">
+        </div>
+      </article>
+    `);
+
+    const posting = extractSemanticJobPosting(
+      document,
+      semanticUrl,
+      extractedAt,
+    );
+
+    expect(posting?.company).toMatchObject({
+      value: null,
+      conflicted: true,
+    });
+    expect(posting?.company.provenance.map(({ excerpt }) => excerpt)).toEqual([
+      'First Organization',
+      'Second Organization',
+    ]);
+  });
+
+  it('does not conflict equivalent repeated nested organization names', () => {
+    loadHtml(`
+      <article itemscope itemtype="https://schema.org/JobPosting">
+        <h1 itemprop="title">Equivalent organization role</h1>
+        <div itemprop="hiringOrganization" itemscope itemtype="https://schema.org/Organization">
+          <span itemprop="name">Equivalent Organization</span>
+          <meta itemprop="name" content="Equivalent Organization">
+        </div>
+      </article>
+    `);
+
+    const posting = extractSemanticJobPosting(
+      document,
+      semanticUrl,
+      extractedAt,
+    );
+
+    expect(posting?.company).toMatchObject({
+      value: 'Equivalent Organization',
+      conflicted: false,
+    });
   });
 
   it('keeps conflicting direct scalar properties unknown', () => {

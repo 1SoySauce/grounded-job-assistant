@@ -107,17 +107,10 @@ function propertyValue(element: Element): string | null {
   return readableText(element);
 }
 
-function singleValue(
-  elements: Element[],
-  reader: (element: Element) => string | null = propertyValue,
+function scalarFromValues(
+  values: string[],
 ): SemanticScalarField<string> | null {
-  const values = elements
-    .map((element) => ({ element, value: reader(element) }))
-    .filter(
-      (entry): entry is { element: Element; value: string } =>
-        entry.value !== null,
-    );
-  const uniqueValues = [...new Set(values.map(({ value }) => value))];
+  const uniqueValues = [...new Set(values)];
   if (uniqueValues.length === 0) {
     return null;
   }
@@ -126,6 +119,16 @@ function singleValue(
   }
   const value = uniqueValues[0];
   return value ? { value, evidence: [value], conflicted: false } : null;
+}
+
+function singleValue(
+  elements: Element[],
+  reader: (element: Element) => string | null = propertyValue,
+): SemanticScalarField<string> | null {
+  const values = elements
+    .map(reader)
+    .filter((value): value is string => value !== null);
+  return scalarFromValues(values);
 }
 
 function field(
@@ -203,17 +206,19 @@ function normalizedScalar<T>(
   };
 }
 
-function nestedName(element: Element): string | null {
+function nestedName(element: Element): SemanticScalarField<string> | null {
   if (!element.hasAttribute('itemscope')) {
-    return propertyValue(element);
+    const value = propertyValue(element);
+    return value ? scalarFromValues([value]) : null;
   }
-  return singleValue(directPropertyElements(element, 'name'))?.value ?? null;
+  return singleValue(directPropertyElements(element, 'name'));
 }
 
 function company(root: Element): SemanticScalarField<string> | null {
-  return singleValue(
-    directPropertyElements(root, 'hiringOrganization'),
-    nestedName,
+  return scalarFromValues(
+    directPropertyElements(root, 'hiringOrganization').flatMap(
+      (element) => nestedName(element)?.evidence ?? [],
+    ),
   );
 }
 
