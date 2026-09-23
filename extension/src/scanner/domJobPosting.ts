@@ -79,6 +79,42 @@ const REQUISITION_LABELS = new Set([
   'job number',
 ]);
 
+const INTERNATIONAL_LOCATION_REGIONS = new Set([
+  'alberta',
+  'british columbia',
+  'england',
+  'new south wales',
+  'northern ireland',
+  'ontario',
+  'quebec',
+  'queensland',
+  'scotland',
+  'victoria',
+  'wales',
+]);
+
+const INTERNATIONAL_LOCATION_COUNTRIES = new Set([
+  'australia',
+  'brazil',
+  'canada',
+  'france',
+  'germany',
+  'india',
+  'ireland',
+  'italy',
+  'japan',
+  'mexico',
+  'netherlands',
+  'new zealand',
+  'singapore',
+  'south africa',
+  'spain',
+  'united kingdom',
+]);
+
+const COMPANY_SUFFIX_PATTERN =
+  /(?:,\s*|\s+)(?:inc(?:orporated)?|l\.?l\.?c\.?|ltd|limited|corp(?:oration)?|plc|gmbh|s\.a\.|pte\.?\s+ltd)\.?$/i;
+
 function cleanString(value: string | null | undefined): string | null {
   if (value === null || value === undefined) {
     return null;
@@ -438,9 +474,22 @@ function nearbyMetadata(candidate: DomCandidate): string[] {
 }
 
 function looksLikeLocation(value: string): boolean {
+  if (COMPANY_SUFFIX_PATTERN.test(value)) {
+    return false;
+  }
+  const parts = value.split(',').map((part) => part.trim());
+  const internationalLocation =
+    parts.length === 2 && parts[0] && parts[1]
+      ? INTERNATIONAL_LOCATION_REGIONS.has(parts[1].toLowerCase()) ||
+        INTERNATIONAL_LOCATION_COUNTRIES.has(parts[1].toLowerCase())
+      : parts.length === 3 && parts[0] && parts[1] && parts[2]
+        ? INTERNATIONAL_LOCATION_REGIONS.has(parts[1].toLowerCase()) &&
+          INTERNATIONAL_LOCATION_COUNTRIES.has(parts[2].toLowerCase())
+        : false;
   return (
     /^(remote|hybrid|on[ -]?site)(?:\b|\s*[-,])/i.test(value) ||
-    /^[^,]{1,100},\s*[A-Z]{2}(?:\s+\d{5}(?:-\d{4})?)?$/.test(value)
+    /^[^,]{1,100},\s*[A-Z]{2}(?:\s+\d{5}(?:-\d{4})?)?$/.test(value) ||
+    internationalLocation
   );
 }
 
@@ -448,7 +497,7 @@ function looksLikeCompany(value: string): boolean {
   return (
     value.length <= JOB_POSTING_LIMITS.company &&
     value.split(/\s+/).length <= 15 &&
-    !/[.!?]$/.test(value) &&
+    (!/[.!?]$/.test(value) || COMPANY_SUFFIX_PATTERN.test(value)) &&
     !looksLikeLocation(value)
   );
 }

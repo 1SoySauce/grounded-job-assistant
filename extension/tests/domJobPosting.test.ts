@@ -247,6 +247,75 @@ describe('ARIA-assisted DOM JobPosting extraction', () => {
     expect(posting?.requisitionId.value).toBeNull();
   });
 
+  it.each([
+    'London, England',
+    'London, England, United Kingdom',
+    'Toronto, Ontario, Canada',
+  ])('recognizes the international location %s', (location) => {
+    loadHtml(`
+      <main>
+        <h1>International Support Engineer</h1>
+        <p>${location}</p>
+        <h2>Responsibilities</h2><p>Support international systems.</p>
+        <h2>Requirements</h2><p>Experience supporting production systems.</p>
+      </main>
+    `);
+
+    const posting = extractDomJobPosting(
+      document,
+      'https://careers.example.test/jobs/international-support-engineer',
+      extractedAt,
+    );
+
+    expect(posting?.company.value).toBeNull();
+    expect(posting?.location.value).toEqual([location]);
+  });
+
+  it.each(['Example City, NY', 'Remote', 'Hybrid - London'])(
+    'preserves existing location handling for %s',
+    (location) => {
+      loadHtml(`
+        <main>
+          <h1>Support Engineer</h1>
+          <p>Example Company</p>
+          <p>${location}</p>
+          <h2>Responsibilities</h2><p>Support production systems.</p>
+          <h2>Requirements</h2><p>Experience supporting production systems.</p>
+        </main>
+      `);
+
+      const posting = extractDomJobPosting(
+        document,
+        'https://careers.example.test/jobs/support-engineer',
+        extractedAt,
+      );
+
+      expect(posting?.company.value).toBe('Example Company');
+      expect(posting?.location.value).toEqual([location]);
+    },
+  );
+
+  it('preserves a comma-bearing company suffix as company metadata', () => {
+    loadHtml(`
+      <main>
+        <h1>Support Engineer</h1>
+        <p>Harbor Systems, Inc.</p>
+        <p>London, England</p>
+        <h2>Responsibilities</h2><p>Support production systems.</p>
+        <h2>Requirements</h2><p>Experience supporting production systems.</p>
+      </main>
+    `);
+
+    const posting = extractDomJobPosting(
+      document,
+      'https://careers.example.test/jobs/support-engineer',
+      extractedAt,
+    );
+
+    expect(posting?.company.value).toBe('Harbor Systems, Inc.');
+    expect(posting?.location.value).toEqual(['London, England']);
+  });
+
   it('uses explicit ARIA heading, metadata, and section associations', () => {
     loadHtml(`
       <main role="main">
