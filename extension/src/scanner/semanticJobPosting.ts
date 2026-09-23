@@ -12,6 +12,18 @@ interface SemanticField<T> {
   evidence: string;
 }
 
+type SemanticScalarField<T> =
+  | {
+      value: T;
+      evidence: [string];
+      conflicted: false;
+    }
+  | {
+      value: null;
+      evidence: string[];
+      conflicted: true;
+    };
+
 const JOB_POSTING_ITEM_TYPES = new Set([
   'https://schema.org/JobPosting',
   'http://schema.org/JobPosting',
@@ -98,7 +110,7 @@ function propertyValue(element: Element): string | null {
 function singleValue(
   elements: Element[],
   reader: (element: Element) => string | null = propertyValue,
-): SemanticField<string> | null {
+): SemanticScalarField<string> | null {
   const values = elements
     .map((element) => ({ element, value: reader(element) }))
     .filter(
@@ -106,14 +118,20 @@ function singleValue(
         entry.value !== null,
     );
   const uniqueValues = [...new Set(values.map(({ value }) => value))];
-  if (uniqueValues.length !== 1) {
+  if (uniqueValues.length === 0) {
     return null;
   }
+  if (uniqueValues.length > 1) {
+    return { value: null, evidence: uniqueValues, conflicted: true };
+  }
   const value = uniqueValues[0];
-  return value ? { value, evidence: value } : null;
+  return value ? { value, evidence: [value], conflicted: false } : null;
 }
 
-function field(root: Element, property: string): SemanticField<string> | null {
+function field(
+  root: Element,
+  property: string,
+): SemanticScalarField<string> | null {
   return singleValue(directPropertyElements(root, property));
 }
 
@@ -155,6 +173,36 @@ function unknownValue() {
   };
 }
 
+function normalizedScalar<T>(
+  field: SemanticScalarField<T> | null,
+  fieldName: string,
+  source: ExtractionSource = 'semantic',
+) {
+  if (!field) {
+    return unknownValue();
+  }
+  if (!field.conflicted) {
+    return sourced(field.value, fieldName, field.evidence[0], source);
+  }
+
+  return {
+    value: null,
+    score: 0,
+    confidence: 'low' as const,
+    conflicted: true,
+    provenance: field.evidence
+      .slice(0, JOB_POSTING_LIMITS.provenancePerValue)
+      .map((evidence, index) => ({
+        source,
+        locator: `semantic[0] ${fieldName}[${index}]`.slice(
+          0,
+          JOB_POSTING_LIMITS.provenanceLocator,
+        ),
+        excerpt: excerpt(evidence),
+      })),
+  };
+}
+
 function nestedName(element: Element): string | null {
   if (!element.hasAttribute('itemscope')) {
     return propertyValue(element);
@@ -162,7 +210,7 @@ function nestedName(element: Element): string | null {
   return singleValue(directPropertyElements(element, 'name'))?.value ?? null;
 }
 
-function company(root: Element): SemanticField<string> | null {
+function company(root: Element): SemanticScalarField<string> | null {
   return singleValue(
     directPropertyElements(root, 'hiringOrganization'),
     nestedName,
@@ -304,7 +352,7 @@ function compensation(root: Element): SemanticField<Compensation> | null {
   };
 }
 
-function identifier(root: Element): SemanticField<string> | null {
+function identifier(root: Element): SemanticScalarField<string> | null {
   return singleValue(directPropertyElements(root, 'identifier'), (element) => {
     if (!element.hasAttribute('itemscope')) {
       return propertyValue(element);
@@ -336,8 +384,11 @@ function canonicalUrl(
   root: Element,
   document: Document,
   currentUrl: string,
-): (SemanticField<string> & { source: ExtractionSource }) | null {
+): (SemanticScalarField<string> & { source: ExtractionSource }) | null {
   const semanticUrl = field(root, 'url');
+  if (semanticUrl?.conflicted) {
+    return { ...semanticUrl, source: 'semantic' };
+  }
   const normalizedSemanticUrl = normalizedHttpUrl(
     semanticUrl?.value ?? null,
     currentUrl,
@@ -345,7 +396,8 @@ function canonicalUrl(
   if (normalizedSemanticUrl) {
     return {
       value: normalizedSemanticUrl,
-      evidence: semanticUrl?.evidence ?? normalizedSemanticUrl,
+      evidence: [semanticUrl?.evidence[0] ?? normalizedSemanticUrl],
+      conflicted: false,
       source: 'semantic',
     };
   }
@@ -360,7 +412,8 @@ function canonicalUrl(
   return normalizedCanonical
     ? {
         value: normalizedCanonical,
-        evidence: canonicalHref ?? normalizedCanonical,
+        evidence: [canonicalHref ?? normalizedCanonical],
+        conflicted: false,
         source: 'url',
       }
     : null;
@@ -493,16 +546,11 @@ function normalizeCandidate(
 
   const result = JobPostingSchema.safeParse({
     schemaVersion: 1,
-    title: title
-      ? sourced(title.value, '[itemprop~="title"]', title.evidence)
-      : unknownValue(),
-    company: normalizedCompany
-      ? sourced(
-          normalizedCompany.value,
-          '[itemprop~="hiringOrganization"]',
-          normalizedCompany.evidence,
-        )
-      : unknownValue(),
+    title: normalizedScalar(title, '[itemprop~="title"]'),
+    company: normalizedScalar(
+      normalizedCompany,
+      '[itemprop~="hiringOrganization"]',
+    ),
     location: normalizedLocations
       ? sourced(
           normalizedLocations.value,
@@ -517,32 +565,23 @@ function normalizeCandidate(
           normalizedCompensation.evidence,
         )
       : unknownValue(),
-    description: normalizedDescription
-      ? sourced(
-          normalizedDescription.value,
-          '[itemprop~="description"]',
-          normalizedDescription.evidence,
-        )
-      : unknownValue(),
+    description: normalizedScalar(
+      normalizedDescription,
+      '[itemprop~="description"]',
+    ),
     requirements: requirements(root),
     currentUrl,
-    canonicalUrl: normalizedCanonicalUrl
-      ? sourced(
-          normalizedCanonicalUrl.value,
-          normalizedCanonicalUrl.source === 'semantic'
-            ? '[itemprop~="url"]'
-            : 'link[rel~="canonical"]',
-          normalizedCanonicalUrl.evidence,
-          normalizedCanonicalUrl.source,
-        )
-      : unknownValue(),
-    requisitionId: normalizedIdentifier
-      ? sourced(
-          normalizedIdentifier.value,
-          '[itemprop~="identifier"]',
-          normalizedIdentifier.evidence,
-        )
-      : unknownValue(),
+    canonicalUrl: normalizedScalar(
+      normalizedCanonicalUrl,
+      normalizedCanonicalUrl?.source === 'semantic'
+        ? '[itemprop~="url"]'
+        : 'link[rel~="canonical"]',
+      normalizedCanonicalUrl?.source,
+    ),
+    requisitionId: normalizedScalar(
+      normalizedIdentifier,
+      '[itemprop~="identifier"]',
+    ),
     extractedAt,
   });
 

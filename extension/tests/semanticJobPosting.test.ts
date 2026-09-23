@@ -102,6 +102,7 @@ describe('semantic JobPosting extraction', () => {
     expect(posting?.company.value).toBeNull();
     expect(posting?.location.value).toBeNull();
     expect(posting?.description.value).toBeNull();
+    expect(posting?.description.conflicted).toBe(false);
     expect(posting?.compensation.value).toBeNull();
     expect(posting?.canonicalUrl.value).toBeNull();
     expect(posting?.requisitionId.value).toBeNull();
@@ -159,7 +160,36 @@ describe('semantic JobPosting extraction', () => {
     );
 
     expect(posting).not.toBeNull();
-    expect(posting?.title.value).toBeNull();
+    expect(posting?.title).toMatchObject({
+      value: null,
+      score: 0,
+      confidence: 'low',
+      conflicted: true,
+    });
+    expect(posting?.title.provenance.map(({ excerpt }) => excerpt)).toEqual([
+      'First direct title',
+      'Second direct title',
+    ]);
+  });
+
+  it('does not conflict equivalent repeated direct scalar properties', () => {
+    loadHtml(`
+      <article itemscope itemtype="https://schema.org/JobPosting">
+        <h1 itemprop="title">Equivalent direct title</h1>
+        <meta itemprop="title" content="Equivalent direct title">
+      </article>
+    `);
+
+    const posting = extractSemanticJobPosting(
+      document,
+      semanticUrl,
+      extractedAt,
+    );
+
+    expect(posting?.title).toMatchObject({
+      value: 'Equivalent direct title',
+      conflicted: false,
+    });
   });
 
   it('classifies only explicitly headed requirement groups', () => {
