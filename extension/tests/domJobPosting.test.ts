@@ -158,6 +158,64 @@ describe('ARIA-assisted DOM JobPosting extraction', () => {
     expect(compensation?.rawText).not.toContain('62,000');
   });
 
+  it.each([
+    ['$70k–$90k', 70_000, 90_000],
+    ['$70K - $90K', 70_000, 90_000],
+    ['$70,000–$90,000 USD per year', 70_000, 90_000],
+  ])('normalizes the compensation range %s', (rawText, minimum, maximum) => {
+    loadHtml(`
+        <main>
+          <h1>Support Engineer</h1>
+          <p>Example Company</p>
+          <h2>Compensation</h2>
+          <p>${rawText}</p>
+          <h2>Responsibilities</h2>
+          <p>Support documented production systems.</p>
+          <h2>Requirements</h2>
+          <p>Experience supporting production systems.</p>
+        </main>
+      `);
+
+    const compensation = scanPage(
+      document,
+      'https://careers.example.test/jobs/support-engineer',
+    ).jobPosting?.compensation.value;
+
+    expect(compensation).toMatchObject({ minimum, maximum });
+    if (rawText.includes('USD')) {
+      expect(compensation).toMatchObject({
+        currency: 'USD',
+        interval: 'year',
+      });
+    }
+  });
+
+  it.each(['$70kk–$90k', '$70k–$90'])(
+    'does not partially parse the malformed or ambiguous range %s',
+    (rawText) => {
+      loadHtml(`
+        <main>
+          <h1>Support Engineer</h1>
+          <p>Example Company</p>
+          <h2>Compensation</h2>
+          <p>${rawText}</p>
+          <h2>Responsibilities</h2>
+          <p>Support documented production systems.</p>
+          <h2>Requirements</h2>
+          <p>Experience supporting production systems.</p>
+        </main>
+      `);
+
+      const posting = scanPage(
+        document,
+        'https://careers.example.test/jobs/support-engineer',
+      ).jobPosting;
+
+      expect(posting?.title.value).toBe('Support Engineer');
+      expect(posting?.compensation.value).toBeNull();
+    },
+  );
+
   it('requires an explicit requisition label and ignores unrelated numbers', () => {
     loadFixture('requisition-id-cases.html');
 

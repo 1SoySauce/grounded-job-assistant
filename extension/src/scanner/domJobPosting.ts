@@ -613,6 +613,25 @@ function parseNumber(value: string): number | null {
   return Number.isFinite(number) && number >= 0 ? number : null;
 }
 
+function parseCompensationAmount(
+  value: string,
+  magnitude: string | undefined,
+): number | null {
+  const amount = parseNumber(value);
+  if (amount === null) {
+    return null;
+  }
+  if (!magnitude) {
+    return amount;
+  }
+  if (magnitude.toLowerCase() !== 'k') {
+    return null;
+  }
+
+  const normalized = amount * 1_000;
+  return Number.isFinite(normalized) ? normalized : null;
+}
+
 function compensation(
   candidate: DomCandidate,
 ): EvidenceField<Compensation> | null {
@@ -626,11 +645,23 @@ function compensation(
       const hasMonetaryContext =
         /[$€£]/.test(rawText) || /\b(?:USD|CAD|EUR|GBP|AUD)\b/i.test(rawText);
       const amountMatches = hasMonetaryContext
-        ? Array.from(rawText.matchAll(/(?:[$€£]\s*)?(\d[\d,]*(?:\.\d+)?)/g))
+        ? Array.from(
+            rawText.matchAll(/(?:[$€£]\s*)?(\d[\d,]*(?:\.\d+)?)([a-z]+)?/gi),
+          )
         : [];
-      const amounts = amountMatches
-        .map((match) => (match[1] ? parseNumber(match[1]) : null))
-        .filter((value): value is number => value !== null);
+      const magnitudeMatches = amountMatches.map((match) => Boolean(match[2]));
+      if (
+        magnitudeMatches.some(Boolean) &&
+        magnitudeMatches.some((hasMagnitude) => !hasMagnitude)
+      ) {
+        return null;
+      }
+      const amounts = amountMatches.map((match) =>
+        match[1] ? parseCompensationAmount(match[1], match[2]) : null,
+      );
+      if (amounts.some((value) => value === null)) {
+        return null;
+      }
       const uniqueAmounts = [...new Set(amounts)];
       if (uniqueAmounts.length > 2) {
         return null;
