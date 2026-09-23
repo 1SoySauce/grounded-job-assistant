@@ -77,6 +77,49 @@ describe('JSON-LD JobPosting extraction', () => {
   });
 
   it.each([
+    ['compact type', 'JobPosting'],
+    ['HTTPS expanded IRI', 'https://schema.org/JobPosting'],
+    ['HTTP expanded IRI', 'http://schema.org/JobPosting'],
+  ])('accepts a scalar %s', (_name, type) => {
+    resetDocument();
+    addJsonLd({ ...posting('Scalar type role'), '@type': type });
+
+    const result = extractJsonLdJobPosting(document, currentUrl, extractedAt);
+
+    expect(result.hasJobPostingStructuredData).toBe(true);
+    expect(result.jobPosting?.title.value).toBe('Scalar type role');
+  });
+
+  it('accepts an array-valued type containing an expanded JobPosting IRI', () => {
+    resetDocument();
+    addJsonLd({
+      ...posting('Expanded array type role'),
+      '@type': ['Thing', 'https://schema.org/JobPosting'],
+    });
+
+    const result = extractJsonLdJobPosting(document, currentUrl, extractedAt);
+
+    expect(result.hasJobPostingStructuredData).toBe(true);
+    expect(result.jobPosting?.title.value).toBe('Expanded array type role');
+  });
+
+  it.each([
+    ['an unrelated Schema.org type', 'https://schema.org/Organization'],
+    [
+      'an arbitrary IRI ending in JobPosting',
+      'https://example.test/JobPosting',
+    ],
+  ])('rejects %s', (_name, type) => {
+    resetDocument();
+    addJsonLd({ ...posting('Unrelated type'), '@type': type });
+
+    const result = extractJsonLdJobPosting(document, currentUrl, extractedAt);
+
+    expect(result.hasJobPostingStructuredData).toBe(false);
+    expect(result.jobPosting).toBeNull();
+  });
+
+  it.each([
     ['object', posting('Object role')],
     ['array', [{ '@type': 'Thing' }, posting('Array role')]],
     [

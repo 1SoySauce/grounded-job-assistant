@@ -34,11 +34,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+const JOB_POSTING_TYPES = new Set([
+  'JobPosting',
+  'https://schema.org/JobPosting',
+  'http://schema.org/JobPosting',
+]);
+
+function isJobPostingType(value: unknown): boolean {
+  return typeof value === 'string' && JOB_POSTING_TYPES.has(value);
+}
+
 function hasJobPostingType(value: Record<string, unknown>): boolean {
   const type = value['@type'];
   return (
-    type === 'JobPosting' ||
-    (Array.isArray(type) && type.some((entry) => entry === 'JobPosting'))
+    isJobPostingType(type) ||
+    (Array.isArray(type) && type.some(isJobPostingType))
   );
 }
 
