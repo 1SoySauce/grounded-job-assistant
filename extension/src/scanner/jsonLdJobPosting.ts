@@ -1,10 +1,27 @@
 import {
   JOB_POSTING_LIMITS,
-  JobPostingSchema,
   type Compensation,
   type JobPosting,
-  type Provenance,
 } from '../types/jobPosting';
+import {
+  collectionObservation,
+  evidence,
+  fallbackObservation,
+  mapObservation,
+  missing,
+  resolved,
+  scalarObservation,
+  type Observation,
+} from './structuredObservation';
+import {
+  intervalValue,
+  monetaryCompensation,
+  numericValue,
+  structuredQuantity,
+  type Quantity,
+} from './structuredCompensation';
+import { normalizeStructuredPosting } from './structuredPosting';
+import { documentCanonicalUrl, normalizedHttpUrl } from './structuredUrl';
 
 export const JSON_LD_LIMITS = {
   scriptTags: 20,
@@ -165,56 +182,6 @@ function cleanString(value: unknown): string | null {
   return cleaned.length > 0 ? cleaned : null;
 }
 
-function excerpt(value: string): string {
-  return value.slice(0, JOB_POSTING_LIMITS.provenanceExcerpt);
-}
-
-function locator(candidate: JsonLdCandidate, field: string): string {
-  return `json-ld[${candidate.scriptIndex}]${candidate.path}.${field}`.slice(
-    0,
-    JOB_POSTING_LIMITS.provenanceLocator,
-  );
-}
-
-function provenance(
-  candidate: JsonLdCandidate,
-  field: string,
-  value: string,
-): Provenance[] {
-  return [
-    {
-      source: 'json_ld',
-      locator: locator(candidate, field),
-      excerpt: excerpt(value),
-    },
-  ];
-}
-
-function sourced<T>(
-  value: T,
-  candidate: JsonLdCandidate,
-  field: string,
-  evidence: string,
-) {
-  return {
-    value,
-    score: 0.95,
-    confidence: 'high' as const,
-    conflicted: false,
-    provenance: provenance(candidate, field, evidence),
-  };
-}
-
-function unknownValue() {
-  return {
-    value: null,
-    score: 0,
-    confidence: 'low' as const,
-    conflicted: false,
-    provenance: [],
-  };
-}
-
 function inertText(document: Document, value: unknown): string | null {
   if (typeof value !== 'string') {
     return null;
@@ -236,196 +203,226 @@ function inertText(document: Document, value: unknown): string | null {
   return cleanString(template.content.textContent);
 }
 
-function addressCountry(value: unknown): string | null {
-  if (isRecord(value)) {
-    return cleanString(value.name);
-  }
-  return cleanString(value);
+type Reader<T> = (value: unknown, path: string) => Observation<T>;
+
+// Only one array level is supported. Nested arrays and JSON-LD expansion
+// constructs are not interpreted as literals.
+function observations<T>(
+  value: unknown,
+  path: string,
+  read: Reader<T>,
+): Observation<T>[] {
+  return Array.isArray(value)
+    ? value.map((item, index) => read(item, appendPath(path, index)))
+    : [read(value, path)];
 }
 
-function locationText(value: unknown): string | null {
-  if (typeof value === 'string') {
-    return cleanString(value);
-  }
-  if (!isRecord(value)) {
-    return null;
-  }
-
-  const address = value.address;
-  if (typeof address === 'string') {
-    return cleanString(address);
-  }
-  if (isRecord(address)) {
-    const parts = [
-      cleanString(address.streetAddress),
-      cleanString(address.addressLocality),
-      cleanString(address.addressRegion),
-      cleanString(address.postalCode),
-      addressCountry(address.addressCountry),
-    ].filter((part): part is string => part !== null);
-    if (parts.length > 0) {
-      return parts.join(', ');
-    }
-  }
-
-  return cleanString(value.name);
+function scalar<T>(
+  value: unknown,
+  path: string,
+  read: Reader<T>,
+): Observation<T> {
+  return scalarObservation(observations(value, path, read));
 }
 
-function locations(value: unknown): string[] | null {
-  const rawLocations = Array.isArray(value) ? value : [value];
-  const normalized = rawLocations
-    .map(locationText)
-    .filter((location): location is string => location !== null);
-  const unique = [...new Set(normalized)];
-  return unique.length > 0 ? unique : null;
+function literal<T>(
+  value: unknown,
+  path: string,
+  normalize: (value: unknown) => T | null,
+): Observation<T> {
+  const normalized = normalize(value);
+  return normalized === null
+    ? missing()
+    : resolved(normalized, [evidence('json_ld', path, String(value))]);
 }
 
-function numericValue(value: unknown): number | null {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return value;
-  }
-  if (typeof value === 'string' && /^-?\d+(?:\.\d+)?$/.test(value.trim())) {
-    return Number(value);
-  }
-  return null;
-}
-
-function compensationInterval(value: unknown): Compensation['interval'] {
-  const normalized = cleanString(value)?.toLowerCase();
-  if (!normalized) {
-    return null;
-  }
-  const intervals = ['hour', 'day', 'week', 'month', 'year'] as const;
-  return (
-    intervals.find(
-      (interval) => normalized === interval || normalized === `${interval}s`,
-    ) ?? null
+function text(value: unknown, path: string): Observation<string> {
+  return scalar(value, path, (item, itemPath) =>
+    literal(item, itemPath, cleanString),
   );
 }
 
-function compensation(value: unknown): Compensation | null {
-  if (typeof value === 'string') {
-    const rawText = cleanString(value);
-    return rawText
-      ? {
+function company(value: unknown, path: string): Observation<string> {
+  return scalar(value, path, (item, itemPath) =>
+    isRecord(item) ? text(item.name, appendPath(itemPath, 'name')) : missing(),
+  );
+}
+
+function addressCountry(value: unknown, path: string): Observation<string> {
+  return scalar(value, path, (item, itemPath) =>
+    isRecord(item)
+      ? text(item.name, appendPath(itemPath, 'name'))
+      : literal(item, itemPath, cleanString),
+  );
+}
+
+function addressText(value: unknown, path: string): Observation<string> {
+  return scalar(value, path, (item, itemPath) => {
+    if (!isRecord(item)) return literal(item, itemPath, cleanString);
+    return mapObservation(
+      collectionObservation([
+        text(item.streetAddress, appendPath(itemPath, 'streetAddress')),
+        text(item.addressLocality, appendPath(itemPath, 'addressLocality')),
+        text(item.addressRegion, appendPath(itemPath, 'addressRegion')),
+        text(item.postalCode, appendPath(itemPath, 'postalCode')),
+        addressCountry(
+          item.addressCountry,
+          appendPath(itemPath, 'addressCountry'),
+        ),
+      ]),
+      (parts) => parts.join(', '),
+    );
+  });
+}
+
+function locationText(value: unknown, path: string): Observation<string> {
+  if (!isRecord(value)) return literal(value, path, cleanString);
+  return fallbackObservation(
+    addressText(value.address, appendPath(path, 'address')),
+    () => text(value.name, appendPath(path, 'name')),
+  );
+}
+
+function locations(value: unknown, path: string): Observation<string[]> {
+  return mapObservation(
+    collectionObservation(observations(value, path, locationText)),
+    (values) => [...new Set(values)],
+  );
+}
+
+function number(value: unknown, path: string): Observation<number> {
+  return scalar(value, path, (item, itemPath) =>
+    literal(item, itemPath, numericValue),
+  );
+}
+
+function interval(
+  value: unknown,
+  path: string,
+): Observation<NonNullable<Compensation['interval']>> {
+  return scalar(value, path, (item, itemPath) =>
+    literal(item, itemPath, intervalValue),
+  );
+}
+
+function quantity(value: unknown, path: string): Observation<Quantity> {
+  return scalar(value, path, (item, itemPath) => {
+    if (!isRecord(item)) {
+      const numeric = literal(item, itemPath, numericValue);
+      if (numeric.status === 'resolved') {
+        return structuredQuantity(numeric, missing(), missing(), missing());
+      }
+      return mapObservation(
+        literal(item, itemPath, cleanString),
+        (rawText) => ({
+          rawText,
+          minimum: null,
+          maximum: null,
+          interval: null,
+        }),
+      );
+    }
+    return structuredQuantity(
+      number(item.value, appendPath(itemPath, 'value')),
+      number(item.minValue, appendPath(itemPath, 'minValue')),
+      number(item.maxValue, appendPath(itemPath, 'maxValue')),
+      interval(item.unitText, appendPath(itemPath, 'unitText')),
+    );
+  });
+}
+
+function compensation(value: unknown, path: string): Observation<Compensation> {
+  return scalar(value, path, (item, itemPath) => {
+    if (typeof item === 'string') {
+      return mapObservation(
+        literal(item, itemPath, cleanString),
+        (rawText) => ({
           rawText,
           minimum: null,
           maximum: null,
           currency: null,
           interval: null,
-        }
-      : null;
-  }
-
-  const directAmount = numericValue(value);
-  if (directAmount !== null) {
-    return {
-      rawText: String(value),
-      minimum: directAmount,
-      maximum: directAmount,
-      currency: null,
-      interval: null,
-    };
-  }
-  if (!isRecord(value)) {
-    return null;
-  }
-
-  const currency = cleanString(value.currency);
-  const quantity = value.value;
-  if (typeof quantity === 'string' && numericValue(quantity) === null) {
-    const rawText = cleanString(quantity);
-    return rawText
-      ? {
-          rawText,
-          minimum: null,
-          maximum: null,
-          currency,
-          interval: null,
-        }
-      : null;
-  }
-
-  const quantityRecord = isRecord(quantity) ? quantity : null;
-  const single = numericValue(quantityRecord?.value ?? quantity);
-  const minimum = numericValue(quantityRecord?.minValue) ?? single;
-  const maximum = numericValue(quantityRecord?.maxValue) ?? single;
-  const interval = compensationInterval(
-    quantityRecord?.unitText ?? value.unitText,
-  );
-
-  if (minimum === null && maximum === null) {
-    return null;
-  }
-
-  const amount =
-    minimum !== null && maximum !== null && minimum !== maximum
-      ? `${minimum}–${maximum}`
-      : String(minimum ?? maximum);
-  const rawText = [amount, currency, interval ? `per ${interval}` : null]
-    .filter((part): part is string => part !== null)
-    .join(' ');
-
-  return { rawText, minimum, maximum, currency, interval };
-}
-
-function identifier(value: unknown): string | null {
-  const identifierValue = isRecord(value) ? value.value : value;
-  if (typeof identifierValue === 'number' && Number.isFinite(identifierValue)) {
-    return String(identifierValue);
-  }
-  return cleanString(identifierValue);
-}
-
-function normalizedHttpUrl(value: unknown, baseUrl: string): string | null {
-  const rawUrl = cleanString(value);
-  if (!rawUrl) {
-    return null;
-  }
-  try {
-    const parsed = new URL(rawUrl, baseUrl);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      return null;
+        }),
+      );
     }
-    parsed.hash = '';
-    return parsed.href;
-  } catch {
-    return null;
-  }
+    if (!isRecord(item)) {
+      const amount = literal(item, itemPath, numericValue);
+      return monetaryCompensation(
+        structuredQuantity(amount, missing(), missing(), missing()),
+        missing(),
+        missing(),
+      );
+    }
+    return monetaryCompensation(
+      quantity(item.value, appendPath(itemPath, 'value')),
+      scalar(item.currency, appendPath(itemPath, 'currency'), (raw, rawPath) =>
+        literal(
+          raw,
+          rawPath,
+          (currency) => cleanString(currency)?.toUpperCase() ?? null,
+        ),
+      ),
+      interval(item.unitText, appendPath(itemPath, 'unitText')),
+    );
+  });
 }
 
-function documentCanonicalUrl(document: Document, currentUrl: string) {
-  const href = document
-    .querySelector<HTMLLinkElement>('link[rel~="canonical"][href]')
-    ?.getAttribute('href');
-  return normalizedHttpUrl(href, currentUrl);
+function identifierLiteral(value: unknown): string | null {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? String(value)
+    : cleanString(value);
+}
+
+function identifier(value: unknown, path: string): Observation<string> {
+  return scalar(value, path, (item, itemPath) =>
+    isRecord(item)
+      ? scalar(item.value, appendPath(itemPath, 'value'), (raw, rawPath) =>
+          literal(raw, rawPath, identifierLiteral),
+        )
+      : literal(item, itemPath, identifierLiteral),
+  );
+}
+
+function candidateUrl(
+  candidate: JsonLdCandidate,
+  currentUrl: string,
+): Observation<string> {
+  return scalar(
+    candidate.value.url,
+    candidatePath(candidate, 'url'),
+    (value, path) =>
+      literal(value, path, (raw) => normalizedHttpUrl(raw, currentUrl)),
+  );
+}
+
+function candidatePath(candidate: JsonLdCandidate, field: string): string {
+  return appendPath(
+    `json-ld[${candidate.scriptIndex}]${candidate.path}`,
+    field,
+  );
 }
 
 function selectCandidate(
   candidates: JsonLdCandidate[],
-  document: Document,
+  pageCanonical: Observation<string>,
   currentUrl: string,
 ): JsonLdCandidate | null {
-  if (candidates.length === 1) {
-    return candidates[0] ?? null;
-  }
-  if (candidates.length === 0) {
-    return null;
-  }
+  if (candidates.length === 1) return candidates[0] ?? null;
+  if (candidates.length === 0) return null;
 
   const normalizedCurrentUrl = normalizedHttpUrl(currentUrl, currentUrl);
-  const canonicalUrl = documentCanonicalUrl(document, currentUrl);
+  const canonical =
+    pageCanonical.status === 'resolved' ? pageCanonical.value : null;
   const scored = candidates.map((candidate) => {
-    const candidateUrl = normalizedHttpUrl(candidate.value.url, currentUrl);
+    const url = candidateUrl(candidate, currentUrl);
+    const value = url.status === 'resolved' ? url.value : null;
     const score =
-      (candidateUrl !== null && candidateUrl === normalizedCurrentUrl ? 1 : 0) +
-      (candidateUrl !== null && candidateUrl === canonicalUrl ? 2 : 0);
+      (value !== null && value === normalizedCurrentUrl ? 1 : 0) +
+      (value !== null && value === canonical ? 2 : 0);
     return { candidate, score };
   });
   const bestScore = Math.max(...scored.map(({ score }) => score));
-  if (bestScore === 0) {
-    return null;
-  }
+  if (bestScore === 0) return null;
   const best = scored.filter(({ score }) => score === bestScore);
   return best.length === 1 ? (best[0]?.candidate ?? null) : null;
 }
@@ -433,57 +430,37 @@ function selectCandidate(
 function normalizeCandidate(
   candidate: JsonLdCandidate,
   document: Document,
+  pageCanonical: Observation<string>,
   currentUrl: string,
   extractedAt: string,
 ): JobPosting | null {
   const value = candidate.value;
-  const title = cleanString(value.title);
-  const company = isRecord(value.hiringOrganization)
-    ? cleanString(value.hiringOrganization.name)
-    : null;
-  const normalizedLocations = locations(value.jobLocation);
-  const normalizedCompensation = compensation(value.baseSalary);
-  const description = inertText(document, value.description);
-  const requisitionId = identifier(value.identifier);
-  const canonicalUrl = normalizedHttpUrl(value.url, currentUrl);
-
-  const result = JobPostingSchema.safeParse({
-    schemaVersion: 1,
-    title: title ? sourced(title, candidate, 'title', title) : unknownValue(),
-    company: company
-      ? sourced(company, candidate, 'hiringOrganization.name', company)
-      : unknownValue(),
-    location: normalizedLocations
-      ? sourced(
-          normalizedLocations,
-          candidate,
-          'jobLocation',
-          normalizedLocations.join(' | '),
-        )
-      : unknownValue(),
-    compensation: normalizedCompensation
-      ? sourced(
-          normalizedCompensation,
-          candidate,
-          'baseSalary',
-          normalizedCompensation.rawText,
-        )
-      : unknownValue(),
-    description: description
-      ? sourced(description, candidate, 'description', description)
-      : unknownValue(),
-    requirements: { required: [], preferred: [], unknown: [] },
+  const path = (field: string) => candidatePath(candidate, field);
+  return normalizeStructuredPosting(
+    {
+      title: text(value.title, path('title')),
+      company: company(value.hiringOrganization, path('hiringOrganization')),
+      location: locations(value.jobLocation, path('jobLocation')),
+      compensation: compensation(value.baseSalary, path('baseSalary')),
+      description: scalar(
+        value.description,
+        path('description'),
+        (raw, rawPath) =>
+          literal(raw, rawPath, (description) =>
+            inertText(document, description),
+          ),
+      ),
+      requisitionId: identifier(value.identifier, path('identifier')),
+      canonicalUrl: fallbackObservation(
+        candidateUrl(candidate, currentUrl),
+        () => pageCanonical,
+      ),
+    },
+    { required: [], preferred: [], unknown: [] },
     currentUrl,
-    canonicalUrl: canonicalUrl
-      ? sourced(canonicalUrl, candidate, 'url', canonicalUrl)
-      : unknownValue(),
-    requisitionId: requisitionId
-      ? sourced(requisitionId, candidate, 'identifier', requisitionId)
-      : unknownValue(),
     extractedAt,
-  });
-
-  return result.success ? result.data : null;
+    0.95,
+  );
 }
 
 export function extractJsonLdJobPosting(
@@ -497,11 +474,23 @@ export function extractJsonLdJobPosting(
     return { hasJobPostingStructuredData, jobPosting: null };
   }
 
-  const selected = selectCandidate(discovery.candidates, document, currentUrl);
+  // Selection and output share the same conflict-aware page metadata.
+  const pageCanonical = documentCanonicalUrl(document, currentUrl);
+  const selected = selectCandidate(
+    discovery.candidates,
+    pageCanonical,
+    currentUrl,
+  );
   return {
     hasJobPostingStructuredData,
     jobPosting: selected
-      ? normalizeCandidate(selected, document, currentUrl, extractedAt)
+      ? normalizeCandidate(
+          selected,
+          document,
+          pageCanonical,
+          currentUrl,
+          extractedAt,
+        )
       : null,
   };
 }

@@ -1,28 +1,28 @@
 import {
   JOB_POSTING_LIMITS,
-  JobPostingSchema,
   type Compensation,
-  type ExtractionSource,
   type JobPosting,
   type Requirement,
 } from '../types/jobPosting';
-
-interface SemanticField<T> {
-  value: T;
-  evidence: string;
-}
-
-type SemanticScalarField<T> =
-  | {
-      value: T;
-      evidence: [string];
-      conflicted: false;
-    }
-  | {
-      value: null;
-      evidence: string[];
-      conflicted: true;
-    };
+import {
+  collectionObservation,
+  evidence,
+  fallbackObservation,
+  mapObservation,
+  missing,
+  resolved,
+  scalarObservation,
+  type Observation,
+} from './structuredObservation';
+import {
+  intervalValue,
+  monetaryCompensation,
+  numericValue,
+  structuredQuantity,
+  type Quantity,
+} from './structuredCompensation';
+import { normalizeStructuredPosting } from './structuredPosting';
+import { documentCanonicalUrl, normalizedHttpUrl } from './structuredUrl';
 
 const JOB_POSTING_ITEM_TYPES = new Set([
   'https://schema.org/JobPosting',
@@ -107,321 +107,160 @@ function propertyValue(element: Element): string | null {
   return readableText(element);
 }
 
-function scalarFromValues(
-  values: string[],
-): SemanticScalarField<string> | null {
-  const uniqueValues = [...new Set(values)];
-  if (uniqueValues.length === 0) {
-    return null;
+function semanticLocator(element: Element): string {
+  const segments: string[] = [];
+  let current: Element | null = element;
+  while (current && !isJobPostingRoot(current)) {
+    const property = itemProps(current)[0];
+    if (property) {
+      const index = current.parentElement
+        ? Array.from(current.parentElement.children).indexOf(current)
+        : 0;
+      segments.unshift(`[itemprop~="${property}"][${index}]`);
+    }
+    current = current.parentElement;
   }
-  if (uniqueValues.length > 1) {
-    return { value: null, evidence: uniqueValues, conflicted: true };
-  }
-  const value = uniqueValues[0];
-  return value ? { value, evidence: [value], conflicted: false } : null;
+  return `semantic[0] ${segments.join(' ')}`;
 }
 
-function singleValue(
-  elements: Element[],
-  reader: (element: Element) => string | null = propertyValue,
-): SemanticScalarField<string> | null {
-  const values = elements
-    .map(reader)
-    .filter((value): value is string => value !== null);
-  return scalarFromValues(values);
+function readValue<T>(
+  element: Element,
+  normalize: (value: string) => T | null,
+): Observation<T> {
+  const raw = propertyValue(element);
+  if (raw === null) return missing();
+  const value = normalize(raw);
+  return value === null
+    ? missing()
+    : resolved(value, [evidence('semantic', semanticLocator(element), raw)]);
 }
 
-function field(
+function textValue(element: Element): Observation<string> {
+  return readValue(element, cleanString);
+}
+
+function scalarProperty<T>(
   root: Element,
   property: string,
-): SemanticScalarField<string> | null {
-  return singleValue(directPropertyElements(root, property));
+  reader: (element: Element) => Observation<T>,
+): Observation<T> {
+  return scalarObservation(directPropertyElements(root, property).map(reader));
+}
+
+function field(root: Element, property: string): Observation<string> {
+  return scalarProperty(root, property, textValue);
 }
 
 function excerpt(value: string): string {
   return value.slice(0, JOB_POSTING_LIMITS.provenanceExcerpt);
 }
 
-function sourced<T>(
-  value: T,
-  fieldName: string,
-  evidence: string,
-  source: ExtractionSource = 'semantic',
-) {
-  return {
-    value,
-    score: 0.9,
-    confidence: 'high' as const,
-    conflicted: false,
-    provenance: [
-      {
-        source,
-        locator: `semantic[0] ${fieldName}`.slice(
-          0,
-          JOB_POSTING_LIMITS.provenanceLocator,
-        ),
-        excerpt: excerpt(evidence),
-      },
-    ],
-  };
+function nestedName(element: Element): Observation<string> {
+  return element.hasAttribute('itemscope')
+    ? field(element, 'name')
+    : textValue(element);
 }
 
-function unknownValue() {
-  return {
-    value: null,
-    score: 0,
-    confidence: 'low' as const,
-    conflicted: false,
-    provenance: [],
-  };
+function company(root: Element): Observation<string> {
+  return scalarProperty(root, 'hiringOrganization', nestedName);
 }
 
-function normalizedScalar<T>(
-  field: SemanticScalarField<T> | null,
-  fieldName: string,
-  source: ExtractionSource = 'semantic',
-) {
-  if (!field) {
-    return unknownValue();
-  }
-  if (!field.conflicted) {
-    return sourced(field.value, fieldName, field.evidence[0], source);
-  }
-
-  return {
-    value: null,
-    score: 0,
-    confidence: 'low' as const,
-    conflicted: true,
-    provenance: field.evidence
-      .slice(0, JOB_POSTING_LIMITS.provenancePerValue)
-      .map((evidence, index) => ({
-        source,
-        locator: `semantic[0] ${fieldName}[${index}]`.slice(
-          0,
-          JOB_POSTING_LIMITS.provenanceLocator,
-        ),
-        excerpt: excerpt(evidence),
-      })),
-  };
+function addressText(element: Element): Observation<string> {
+  if (!element.hasAttribute('itemscope')) return textValue(element);
+  return mapObservation(
+    collectionObservation([
+      field(element, 'streetAddress'),
+      field(element, 'addressLocality'),
+      field(element, 'addressRegion'),
+      field(element, 'postalCode'),
+      scalarProperty(element, 'addressCountry', nestedName),
+    ]),
+    (parts) => parts.join(', '),
+  );
 }
 
-function nestedName(element: Element): SemanticScalarField<string> | null {
+function locationText(element: Element): Observation<string> {
+  if (!element.hasAttribute('itemscope')) return textValue(element);
+  return fallbackObservation(
+    scalarProperty(element, 'address', addressText),
+    () => field(element, 'name'),
+  );
+}
+
+function locations(root: Element): Observation<string[]> {
+  return mapObservation(
+    collectionObservation(
+      directPropertyElements(root, 'jobLocation').map(locationText),
+    ),
+    (values) => [...new Set(values)],
+  );
+}
+
+function quantity(element: Element): Observation<Quantity> {
   if (!element.hasAttribute('itemscope')) {
-    const value = propertyValue(element);
-    return value ? scalarFromValues([value]) : null;
+    return structuredQuantity(
+      readValue(element, numericValue),
+      missing(),
+      missing(),
+      missing(),
+    );
   }
-  return singleValue(directPropertyElements(element, 'name'));
-}
-
-function company(root: Element): SemanticScalarField<string> | null {
-  return scalarFromValues(
-    directPropertyElements(root, 'hiringOrganization').flatMap(
-      (element) => nestedName(element)?.evidence ?? [],
+  return structuredQuantity(
+    scalarProperty(element, 'value', (child) => readValue(child, numericValue)),
+    scalarProperty(element, 'minValue', (child) =>
+      readValue(child, numericValue),
+    ),
+    scalarProperty(element, 'maxValue', (child) =>
+      readValue(child, numericValue),
+    ),
+    scalarProperty(element, 'unitText', (child) =>
+      readValue(child, intervalValue),
     ),
   );
 }
 
-function addressCountry(element: Element): string | null {
-  if (!element.hasAttribute('itemscope')) {
-    return propertyValue(element);
-  }
-  return singleValue(directPropertyElements(element, 'name'))?.value ?? null;
-}
-
-function addressText(element: Element): string | null {
-  if (!element.hasAttribute('itemscope')) {
-    return propertyValue(element);
-  }
-
-  const parts = [
-    field(element, 'streetAddress')?.value ?? null,
-    field(element, 'addressLocality')?.value ?? null,
-    field(element, 'addressRegion')?.value ?? null,
-    field(element, 'postalCode')?.value ?? null,
-    singleValue(
-      directPropertyElements(element, 'addressCountry'),
-      addressCountry,
-    )?.value ?? null,
-  ].filter((part): part is string => part !== null);
-  return parts.length > 0 ? parts.join(', ') : null;
-}
-
-function locationText(element: Element): string | null {
-  if (!element.hasAttribute('itemscope')) {
-    return propertyValue(element);
-  }
-
-  const address = singleValue(
-    directPropertyElements(element, 'address'),
-    addressText,
-  )?.value;
-  return address ?? field(element, 'name')?.value ?? null;
-}
-
-function locations(root: Element): SemanticField<string[]> | null {
-  const values = directPropertyElements(root, 'jobLocation')
-    .map(locationText)
-    .filter((value): value is string => value !== null);
-  const unique = [...new Set(values)];
-  return unique.length > 0
-    ? { value: unique, evidence: unique.join(' | ') }
-    : null;
-}
-
-function numericValue(value: string | null | undefined): number | null {
-  if (!value || !/^-?\d+(?:\.\d+)?$/.test(value)) {
-    return null;
-  }
-  const number = Number(value);
-  return Number.isFinite(number) ? number : null;
-}
-
-function compensationInterval(
-  value: string | null | undefined,
-): Compensation['interval'] {
-  const normalized = cleanString(value)?.toLowerCase();
-  const intervals = ['hour', 'day', 'week', 'month', 'year'] as const;
-  return (
-    intervals.find(
-      (interval) => normalized === interval || normalized === `${interval}s`,
-    ) ?? null
-  );
-}
-
-function compensation(root: Element): SemanticField<Compensation> | null {
-  const salaryElements = directPropertyElements(root, 'baseSalary');
-  if (salaryElements.length !== 1) {
-    return null;
-  }
-  const salaryElement = salaryElements[0];
-  if (!salaryElement) {
-    return null;
-  }
-
-  if (!salaryElement.hasAttribute('itemscope')) {
-    const rawText = propertyValue(salaryElement);
-    return rawText
-      ? {
-          value: {
-            rawText,
-            minimum: null,
-            maximum: null,
-            currency: null,
-            interval: null,
-          },
-          evidence: rawText,
-        }
-      : null;
-  }
-
-  const currency = field(salaryElement, 'currency')?.value ?? null;
-  const valueElement = directPropertyElements(salaryElement, 'value')[0];
-  const quantityScope =
-    valueElement?.hasAttribute('itemscope') === true ? valueElement : null;
-  const single = numericValue(
-    quantityScope
-      ? field(quantityScope, 'value')?.value
-      : valueElement
-        ? propertyValue(valueElement)
-        : null,
-  );
-  const minimum =
-    numericValue(
-      quantityScope ? field(quantityScope, 'minValue')?.value : null,
-    ) ?? single;
-  const maximum =
-    numericValue(
-      quantityScope ? field(quantityScope, 'maxValue')?.value : null,
-    ) ?? single;
-  const interval = compensationInterval(
-    quantityScope
-      ? field(quantityScope, 'unitText')?.value
-      : field(salaryElement, 'unitText')?.value,
-  );
-
-  if (minimum === null && maximum === null) {
-    return null;
-  }
-
-  const amount =
-    minimum !== null && maximum !== null && minimum !== maximum
-      ? `${minimum}–${maximum}`
-      : String(minimum ?? maximum);
-  const rawText = [amount, currency, interval ? `per ${interval}` : null]
-    .filter((part): part is string => part !== null)
-    .join(' ');
-  return {
-    value: { rawText, minimum, maximum, currency, interval },
-    evidence: rawText,
-  };
-}
-
-function identifier(root: Element): SemanticScalarField<string> | null {
-  return singleValue(directPropertyElements(root, 'identifier'), (element) => {
+function compensation(root: Element): Observation<Compensation> {
+  return scalarProperty(root, 'baseSalary', (element) => {
     if (!element.hasAttribute('itemscope')) {
-      return propertyValue(element);
+      return mapObservation(textValue(element), (rawText) => ({
+        rawText,
+        minimum: null,
+        maximum: null,
+        currency: null,
+        interval: null,
+      }));
     }
-    return field(element, 'value')?.value ?? null;
+    return monetaryCompensation(
+      scalarProperty(element, 'value', quantity),
+      scalarProperty(element, 'currency', (child) =>
+        readValue(child, (text) => text.toUpperCase()),
+      ),
+      scalarProperty(element, 'unitText', (child) =>
+        readValue(child, intervalValue),
+      ),
+    );
   });
 }
 
-function normalizedHttpUrl(
-  value: string | null,
-  baseUrl: string,
-): string | null {
-  if (!value) {
-    return null;
-  }
-  try {
-    const parsed = new URL(value, baseUrl);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      return null;
-    }
-    parsed.hash = '';
-    return parsed.href;
-  } catch {
-    return null;
-  }
+function identifier(root: Element): Observation<string> {
+  return scalarProperty(root, 'identifier', (element) =>
+    element.hasAttribute('itemscope')
+      ? field(element, 'value')
+      : textValue(element),
+  );
 }
 
 function canonicalUrl(
   root: Element,
   document: Document,
   currentUrl: string,
-): (SemanticScalarField<string> & { source: ExtractionSource }) | null {
-  const semanticUrl = field(root, 'url');
-  if (semanticUrl?.conflicted) {
-    return { ...semanticUrl, source: 'semantic' };
-  }
-  const normalizedSemanticUrl = normalizedHttpUrl(
-    semanticUrl?.value ?? null,
-    currentUrl,
+): Observation<string> {
+  return fallbackObservation(
+    scalarProperty(root, 'url', (element) =>
+      readValue(element, (value) => normalizedHttpUrl(value, currentUrl)),
+    ),
+    () => documentCanonicalUrl(document, currentUrl),
   );
-  if (normalizedSemanticUrl) {
-    return {
-      value: normalizedSemanticUrl,
-      evidence: [semanticUrl?.evidence[0] ?? normalizedSemanticUrl],
-      conflicted: false,
-      source: 'semantic',
-    };
-  }
-
-  const canonicalHref = document
-    .querySelector<HTMLLinkElement>('link[rel~="canonical"][href]')
-    ?.getAttribute('href');
-  const normalizedCanonical = normalizedHttpUrl(
-    canonicalHref ?? null,
-    currentUrl,
-  );
-  return normalizedCanonical
-    ? {
-        value: normalizedCanonical,
-        evidence: [canonicalHref ?? normalizedCanonical],
-        conflicted: false,
-        source: 'url',
-      }
-    : null;
 }
 
 const REQUIREMENT_HEADINGS: Readonly<
@@ -541,56 +380,21 @@ function normalizeCandidate(
   currentUrl: string,
   extractedAt: string,
 ): JobPosting | null {
-  const title = field(root, 'title');
-  const normalizedCompany = company(root);
-  const normalizedLocations = locations(root);
-  const normalizedDescription = field(root, 'description');
-  const normalizedIdentifier = identifier(root);
-  const normalizedCompensation = compensation(root);
-  const normalizedCanonicalUrl = canonicalUrl(root, document, currentUrl);
-
-  const result = JobPostingSchema.safeParse({
-    schemaVersion: 1,
-    title: normalizedScalar(title, '[itemprop~="title"]'),
-    company: normalizedScalar(
-      normalizedCompany,
-      '[itemprop~="hiringOrganization"]',
-    ),
-    location: normalizedLocations
-      ? sourced(
-          normalizedLocations.value,
-          '[itemprop~="jobLocation"]',
-          normalizedLocations.evidence,
-        )
-      : unknownValue(),
-    compensation: normalizedCompensation
-      ? sourced(
-          normalizedCompensation.value,
-          '[itemprop~="baseSalary"]',
-          normalizedCompensation.evidence,
-        )
-      : unknownValue(),
-    description: normalizedScalar(
-      normalizedDescription,
-      '[itemprop~="description"]',
-    ),
-    requirements: requirements(root),
+  return normalizeStructuredPosting(
+    {
+      title: field(root, 'title'),
+      company: company(root),
+      location: locations(root),
+      description: field(root, 'description'),
+      requisitionId: identifier(root),
+      compensation: compensation(root),
+      canonicalUrl: canonicalUrl(root, document, currentUrl),
+    },
+    requirements(root),
     currentUrl,
-    canonicalUrl: normalizedScalar(
-      normalizedCanonicalUrl,
-      normalizedCanonicalUrl?.source === 'semantic'
-        ? '[itemprop~="url"]'
-        : 'link[rel~="canonical"]',
-      normalizedCanonicalUrl?.source,
-    ),
-    requisitionId: normalizedScalar(
-      normalizedIdentifier,
-      '[itemprop~="identifier"]',
-    ),
     extractedAt,
-  });
-
-  return result.success ? result.data : null;
+    0.9,
+  );
 }
 
 export function extractSemanticJobPosting(
