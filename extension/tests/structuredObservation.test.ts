@@ -100,6 +100,33 @@ describe('structured observation contract', () => {
     });
   });
 
+  it('deduplicates keyed members before sharing provenance without changing unkeyed collections', () => {
+    const repeats = Array.from(
+      { length: JOB_POSTING_LIMITS.provenancePerValue + 1 },
+      (_, index) => observation('London', 'location-' + index),
+    );
+    const members = [...repeats, observation('Paris')];
+    const locations = collectionObservation(members, (value) => value);
+    expect(locations).toMatchObject({
+      status: 'resolved',
+      value: ['London', 'Paris'],
+      provenance: [
+        evidence('semantic', 'location-0', 'London'),
+        evidence('semantic', 'Paris', 'Paris'),
+      ],
+    });
+    expect(collectionObservation(repeats)).toMatchObject({
+      value: Array<string>(repeats.length).fill('London'),
+    });
+    const conflict = scalarObservation([
+      observation('London'),
+      observation('Berlin'),
+    ]);
+    expect(
+      collectionObservation([...members, conflict], (value) => value),
+    ).toEqual(conflict);
+  });
+
   it('bounds evidence while retaining distinctive witnesses in compound conflicts', () => {
     const shared = Array.from({ length: 9 }, (_, index) =>
       evidence('semantic', 'shared-' + index, 'shared-' + index),

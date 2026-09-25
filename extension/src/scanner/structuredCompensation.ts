@@ -2,8 +2,10 @@ import type { Compensation } from '../types/jobPosting';
 import {
   composeObservation,
   conflicted,
+  mapObservation,
   missing,
   resolved,
+  scalarObservation,
   type Observation,
 } from './structuredObservation';
 
@@ -12,6 +14,60 @@ export interface Quantity {
   maximum: number | null;
   interval: Compensation['interval'];
   rawText: string | null;
+}
+
+// Internal observations may contain only currency/interval evidence. They are
+// not public Compensation values until sibling reconciliation has completed.
+export interface Salary extends Quantity {
+  currency: string | null;
+}
+
+function amountObservation<T extends Quantity>(
+  observations: readonly Observation<T>[],
+): Observation<T> {
+  return scalarObservation(
+    observations.map((observation) =>
+      mapObservation(observation, (value) =>
+        value.minimum !== null ||
+        value.maximum !== null ||
+        value.rawText !== null
+          ? value
+          : null,
+      ),
+    ),
+    ({ minimum, maximum, rawText }) =>
+      JSON.stringify({ minimum, maximum, rawText }),
+  );
+}
+
+function intervalObservation(
+  observations: readonly Observation<Quantity>[],
+): Observation<NonNullable<Compensation['interval']>> {
+  return scalarObservation(
+    observations.map((observation) =>
+      mapObservation(observation, (value) => value.interval),
+    ),
+  );
+}
+
+export function quantityObservation(
+  observations: readonly Observation<Quantity>[],
+): Observation<Quantity> {
+  return composeObservation(
+    {
+      amount: amountObservation(observations),
+      interval: intervalObservation(observations),
+    },
+    ({ amount, interval }) =>
+      amount || interval
+        ? {
+            minimum: amount?.minimum ?? null,
+            maximum: amount?.maximum ?? null,
+            interval,
+            rawText: amount?.rawText ?? null,
+          }
+        : null,
+  );
 }
 
 export function numericValue(value: unknown): number | null {
@@ -52,7 +108,7 @@ export function structuredQuantity(
     return conflicted([parts.provenance]);
   const lower = values.minimum ?? values.single;
   const upper = values.maximum ?? values.single;
-  return lower === null && upper === null
+  return lower === null && upper === null && values.interval === null
     ? missing()
     : resolved(
         {
@@ -69,23 +125,55 @@ export function monetaryCompensation(
   quantity: Observation<Quantity>,
   currency: Observation<string>,
   interval: Observation<NonNullable<Compensation['interval']>>,
-): Observation<Compensation> {
+): Observation<Salary> {
   const parts = composeObservation(
     { quantity, currency, interval },
     (values) => values,
   );
   if (parts.status !== 'resolved') return parts;
   const values = parts.value;
-  if (!values.quantity) return missing();
   const amount = values.quantity;
   if (
-    amount.interval &&
+    amount?.interval &&
     values.interval &&
     amount.interval !== values.interval
   ) {
     return conflicted([parts.provenance]);
   }
-  const period = amount.interval ?? values.interval;
+  const period = amount?.interval ?? values.interval;
+  if (!amount && values.currency === null && period === null) return missing();
+  return resolved(
+    {
+      rawText: amount?.rawText ?? null,
+      minimum: amount?.minimum ?? null,
+      maximum: amount?.maximum ?? null,
+      currency: values.currency,
+      interval: period,
+    },
+    parts.provenance,
+  );
+}
+
+export function compensationObservation(
+  observations: readonly Observation<Salary>[],
+): Observation<Compensation> {
+  const parts = composeObservation(
+    {
+      // Complete amounts still obey scalar semantics; separate ranges are not
+      // merged. Component-only siblings also participate in conflict checks.
+      amount: amountObservation(observations),
+      currency: scalarObservation(
+        observations.map((observation) =>
+          mapObservation(observation, (value) => value.currency),
+        ),
+      ),
+      interval: intervalObservation(observations),
+    },
+    ({ amount, currency, interval }) =>
+      amount ? { ...amount, currency, interval } : null,
+  );
+  if (parts.status !== 'resolved') return parts;
+  const amount = parts.value;
   const numericText =
     amount.minimum !== null &&
     amount.maximum !== null &&
@@ -94,7 +182,11 @@ export function monetaryCompensation(
       : String(amount.minimum ?? amount.maximum);
   const rawText =
     amount.rawText ??
-    [numericText, values.currency, period ? `per ${period}` : null]
+    [
+      numericText,
+      amount.currency,
+      amount.interval ? `per ${amount.interval}` : null,
+    ]
       .filter(Boolean)
       .join(' ');
   return resolved(
@@ -102,8 +194,8 @@ export function monetaryCompensation(
       rawText,
       minimum: amount.minimum,
       maximum: amount.maximum,
-      currency: values.currency,
-      interval: period,
+      currency: amount.currency,
+      interval: amount.interval,
     },
     parts.provenance,
   );

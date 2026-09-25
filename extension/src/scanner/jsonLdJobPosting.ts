@@ -5,6 +5,7 @@ import {
 } from '../types/jobPosting';
 import {
   collectionObservation,
+  conflicted,
   evidence,
   fallbackObservation,
   mapObservation,
@@ -14,9 +15,11 @@ import {
   type Observation,
 } from './structuredObservation';
 import {
+  compensationObservation,
   intervalValue,
   monetaryCompensation,
   numericValue,
+  quantityObservation,
   structuredQuantity,
   type Quantity,
 } from './structuredCompensation';
@@ -284,9 +287,9 @@ function locationText(value: unknown, path: string): Observation<string> {
 }
 
 function locations(value: unknown, path: string): Observation<string[]> {
-  return mapObservation(
-    collectionObservation(observations(value, path, locationText)),
-    (values) => [...new Set(values)],
+  return collectionObservation(
+    observations(value, path, locationText),
+    (value) => value,
   );
 }
 
@@ -306,65 +309,72 @@ function interval(
 }
 
 function quantity(value: unknown, path: string): Observation<Quantity> {
-  return scalar(value, path, (item, itemPath) => {
-    if (!isRecord(item)) {
-      const numeric = literal(item, itemPath, numericValue);
-      if (numeric.status === 'resolved') {
-        return structuredQuantity(numeric, missing(), missing(), missing());
+  return quantityObservation(
+    observations(value, path, (item, itemPath) => {
+      if (!isRecord(item)) {
+        const numeric = literal(item, itemPath, numericValue);
+        if (numeric.status === 'resolved') {
+          return structuredQuantity(numeric, missing(), missing(), missing());
+        }
+        return mapObservation(
+          literal(item, itemPath, cleanString),
+          (rawText) => ({
+            rawText,
+            minimum: null,
+            maximum: null,
+            interval: null,
+          }),
+        );
       }
-      return mapObservation(
-        literal(item, itemPath, cleanString),
-        (rawText) => ({
-          rawText,
-          minimum: null,
-          maximum: null,
-          interval: null,
-        }),
+      return structuredQuantity(
+        number(item.value, appendPath(itemPath, 'value')),
+        number(item.minValue, appendPath(itemPath, 'minValue')),
+        number(item.maxValue, appendPath(itemPath, 'maxValue')),
+        interval(item.unitText, appendPath(itemPath, 'unitText')),
       );
-    }
-    return structuredQuantity(
-      number(item.value, appendPath(itemPath, 'value')),
-      number(item.minValue, appendPath(itemPath, 'minValue')),
-      number(item.maxValue, appendPath(itemPath, 'maxValue')),
-      interval(item.unitText, appendPath(itemPath, 'unitText')),
-    );
-  });
+    }),
+  );
 }
 
 function compensation(value: unknown, path: string): Observation<Compensation> {
-  return scalar(value, path, (item, itemPath) => {
-    if (typeof item === 'string') {
-      return mapObservation(
-        literal(item, itemPath, cleanString),
-        (rawText) => ({
-          rawText,
-          minimum: null,
-          maximum: null,
-          currency: null,
-          interval: null,
-        }),
-      );
-    }
-    if (!isRecord(item)) {
-      const amount = literal(item, itemPath, numericValue);
+  return compensationObservation(
+    observations(value, path, (item, itemPath) => {
+      if (typeof item === 'string') {
+        return mapObservation(
+          literal(item, itemPath, cleanString),
+          (rawText) => ({
+            rawText,
+            minimum: null,
+            maximum: null,
+            currency: null,
+            interval: null,
+          }),
+        );
+      }
+      if (!isRecord(item)) {
+        const amount = literal(item, itemPath, numericValue);
+        return monetaryCompensation(
+          structuredQuantity(amount, missing(), missing(), missing()),
+          missing(),
+          missing(),
+        );
+      }
       return monetaryCompensation(
-        structuredQuantity(amount, missing(), missing(), missing()),
-        missing(),
-        missing(),
-      );
-    }
-    return monetaryCompensation(
-      quantity(item.value, appendPath(itemPath, 'value')),
-      scalar(item.currency, appendPath(itemPath, 'currency'), (raw, rawPath) =>
-        literal(
-          raw,
-          rawPath,
-          (currency) => cleanString(currency)?.toUpperCase() ?? null,
+        quantity(item.value, appendPath(itemPath, 'value')),
+        scalar(
+          item.currency,
+          appendPath(itemPath, 'currency'),
+          (raw, rawPath) =>
+            literal(
+              raw,
+              rawPath,
+              (currency) => cleanString(currency)?.toUpperCase() ?? null,
+            ),
         ),
-      ),
-      interval(item.unitText, appendPath(itemPath, 'unitText')),
-    );
-  });
+        interval(item.unitText, appendPath(itemPath, 'unitText')),
+      );
+    }),
+  );
 }
 
 function identifierLiteral(value: unknown): string | null {
@@ -383,16 +393,23 @@ function identifier(value: unknown, path: string): Observation<string> {
   );
 }
 
-function candidateUrl(
+function candidateUrlObservations(
   candidate: JsonLdCandidate,
   currentUrl: string,
-): Observation<string> {
-  return scalar(
+): Observation<string>[] {
+  return observations(
     candidate.value.url,
     candidatePath(candidate, 'url'),
     (value, path) =>
       literal(value, path, (raw) => normalizedHttpUrl(raw, currentUrl)),
   );
+}
+
+function candidateUrl(
+  candidate: JsonLdCandidate,
+  currentUrl: string,
+): Observation<string> {
+  return scalarObservation(candidateUrlObservations(candidate, currentUrl));
 }
 
 function candidatePath(candidate: JsonLdCandidate, field: string): string {
@@ -481,16 +498,53 @@ export function extractJsonLdJobPosting(
     pageCanonical,
     currentUrl,
   );
-  return {
-    hasJobPostingStructuredData,
-    jobPosting: selected
-      ? normalizeCandidate(
-          selected,
-          document,
-          pageCanonical,
-          currentUrl,
-          extractedAt,
-        )
-      : null,
-  };
+  const jobPosting = selected
+    ? normalizeCandidate(
+        selected,
+        document,
+        pageCanonical,
+        currentUrl,
+        extractedAt,
+      )
+    : null;
+  if (jobPosting) return { hasJobPostingStructuredData, jobPosting };
+
+  // Preserve only selection-relevant URL conflicts when no valid posting remains,
+  // including when the remaining URL match fails identity validation.
+  const normalizedCurrentUrl = normalizedHttpUrl(currentUrl, currentUrl);
+  const canonical =
+    pageCanonical.status === 'resolved' ? pageCanonical.value : null;
+  const conflicts = discovery.candidates.flatMap((candidate) => {
+    const urls = candidateUrlObservations(candidate, currentUrl);
+    const url = scalarObservation(urls);
+    const relevant = urls.some(
+      (item) =>
+        item.status === 'resolved' &&
+        (item.value === normalizedCurrentUrl || item.value === canonical),
+    );
+    return url.status === 'conflicted' && relevant ? [url.provenance] : [];
+  });
+  if (conflicts.length > 0) {
+    return {
+      hasJobPostingStructuredData,
+      // No candidate's fields are safe to select here. Keep the URL witnesses
+      // in a schema-valid posting so ambiguity cannot trigger weaker fallback.
+      jobPosting: normalizeStructuredPosting(
+        {
+          title: missing(),
+          company: missing(),
+          location: missing(),
+          compensation: missing(),
+          description: missing(),
+          requisitionId: missing(),
+          canonicalUrl: conflicted(conflicts),
+        },
+        { required: [], preferred: [], unknown: [] },
+        currentUrl,
+        extractedAt,
+        0.95,
+      ),
+    };
+  }
+  return { hasJobPostingStructuredData, jobPosting: null };
 }

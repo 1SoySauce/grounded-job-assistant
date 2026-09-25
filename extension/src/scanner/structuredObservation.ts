@@ -139,10 +139,22 @@ export function scalarObservation<T>(
 // parent. Scalar cardinality is deliberately handled by a different helper.
 export function collectionObservation<T>(
   observations: readonly Observation<T>[],
+  memberKey?: (value: T) => string,
 ): Observation<T[]> {
   const conflict = childConflict(observations);
   if (conflict) return conflict;
-  const present = observations.filter((item) => item.status === 'resolved');
+  const seen = new Set<string>();
+  // Opt-in membership deduplication happens before sharing the evidence cap.
+  // Unkeyed collections (including ordered address components) retain repeats.
+  const present = observations
+    .filter((item) => item.status === 'resolved')
+    .filter((item) => {
+      if (!memberKey) return true;
+      const key = memberKey(item.value);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   return present.length === 0
     ? missing()
     : resolved(

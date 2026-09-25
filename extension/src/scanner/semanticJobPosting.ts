@@ -15,9 +15,11 @@ import {
   type Observation,
 } from './structuredObservation';
 import {
+  compensationObservation,
   intervalValue,
   monetaryCompensation,
   numericValue,
+  quantityObservation,
   structuredQuantity,
   type Quantity,
 } from './structuredCompensation';
@@ -188,11 +190,9 @@ function locationText(element: Element): Observation<string> {
 }
 
 function locations(root: Element): Observation<string[]> {
-  return mapObservation(
-    collectionObservation(
-      directPropertyElements(root, 'jobLocation').map(locationText),
-    ),
-    (values) => [...new Set(values)],
+  return collectionObservation(
+    directPropertyElements(root, 'jobLocation').map(locationText),
+    (value) => value,
   );
 }
 
@@ -220,26 +220,30 @@ function quantity(element: Element): Observation<Quantity> {
 }
 
 function compensation(root: Element): Observation<Compensation> {
-  return scalarProperty(root, 'baseSalary', (element) => {
-    if (!element.hasAttribute('itemscope')) {
-      return mapObservation(textValue(element), (rawText) => ({
-        rawText,
-        minimum: null,
-        maximum: null,
-        currency: null,
-        interval: null,
-      }));
-    }
-    return monetaryCompensation(
-      scalarProperty(element, 'value', quantity),
-      scalarProperty(element, 'currency', (child) =>
-        readValue(child, (text) => text.toUpperCase()),
-      ),
-      scalarProperty(element, 'unitText', (child) =>
-        readValue(child, intervalValue),
-      ),
-    );
-  });
+  return compensationObservation(
+    directPropertyElements(root, 'baseSalary').map((element) => {
+      if (!element.hasAttribute('itemscope')) {
+        return mapObservation(textValue(element), (rawText) => ({
+          rawText,
+          minimum: null,
+          maximum: null,
+          currency: null,
+          interval: null,
+        }));
+      }
+      return monetaryCompensation(
+        quantityObservation(
+          directPropertyElements(element, 'value').map(quantity),
+        ),
+        scalarProperty(element, 'currency', (child) =>
+          readValue(child, (text) => text.toUpperCase()),
+        ),
+        scalarProperty(element, 'unitText', (child) =>
+          readValue(child, intervalValue),
+        ),
+      );
+    }),
+  );
 }
 
 function identifier(root: Element): Observation<string> {

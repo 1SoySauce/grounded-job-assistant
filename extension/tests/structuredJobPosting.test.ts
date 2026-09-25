@@ -96,7 +96,10 @@ function extract(
   return result!;
 }
 
-function expectMissing(field: JobPosting['title']): void {
+function expectMissing(
+  field:
+    JobPosting['title'] | JobPosting['location'] | JobPosting['compensation'],
+): void {
   expect(field).toEqual({
     value: null,
     conflicted: false,
@@ -326,6 +329,45 @@ describe.each<Source>(['json_ld', 'semantic'])(
       ).toEqual(['Named place']);
     });
 
+    it('reserves provenance for distinct locations before bounding duplicate members', () => {
+      const london = { address: { addressLocality: 'London' } };
+      const members = [
+        ...Array.from(
+          { length: JOB_POSTING_LIMITS.provenancePerValue + 5 },
+          () => london,
+        ),
+        { address: { addressLocality: 'Paris' } },
+      ];
+      const location = extract(source, { jobLocation: members }).location;
+      expect(location).toMatchObject({
+        value: ['London', 'Paris'],
+        conflicted: false,
+        confidence: 'high',
+      });
+      expect(location.provenance.map(({ excerpt }) => excerpt)).toEqual(
+        expect.arrayContaining(['London', 'Paris']),
+      );
+      expect(location.provenance.length).toBeLessThanOrEqual(
+        JOB_POSTING_LIMITS.provenancePerValue,
+      );
+      expectConflict(
+        extract(source, {
+          jobLocation: [
+            ...members,
+            { address: { addressLocality: ['London', 'Berlin'] } },
+          ],
+        }).location,
+        ['London', 'Berlin'],
+      );
+      expect(
+        extract(source, {
+          jobLocation: {
+            address: { addressLocality: 'New York', addressRegion: 'New York' },
+          },
+        }).location.value,
+      ).toEqual(['New York, New York']);
+    });
+
     const salaries: Array<{
       name: string;
       values: [string | number, string | number];
@@ -445,6 +487,181 @@ describe.each<Source>(['json_ld', 'semantic'])(
         conflicted: false,
         provenance: [],
       });
+    });
+
+    it.each([
+      {
+        name: 'currency-only salary',
+        members: [{ value: 50, currency: 'USD' }, { currency: 'EUR' }],
+        nested: false,
+        witnesses: ['USD', 'EUR'],
+      },
+      {
+        name: 'interval-only salary',
+        members: [{ value: 50, unitText: 'hour' }, { unitText: 'year' }],
+        nested: false,
+        witnesses: ['hour', 'year'],
+      },
+      {
+        name: 'salary with an interval-only quantity',
+        members: [
+          { value: { value: 50, unitText: 'hour' } },
+          { value: { unitText: 'year' } },
+        ],
+        nested: false,
+        witnesses: ['hour', 'year'],
+      },
+      {
+        name: 'nested interval-only quantity',
+        members: [{ value: 50, unitText: 'hour' }, { unitText: 'year' }],
+        nested: true,
+        witnesses: ['hour', 'year'],
+      },
+    ])(
+      'reconciles a contradictory $name before dropping incomplete evidence',
+      ({ members, nested, witnesses }) => {
+        for (const order of [members, [...members].reverse()]) {
+          expectConflict(
+            extract(source, { baseSalary: nested ? { value: order } : order })
+              .compensation,
+            witnesses,
+          );
+        }
+      },
+    );
+
+    it('retains incomplete interval evidence for cross-level reconciliation', () => {
+      expectConflict(
+        extract(source, {
+          baseSalary: { value: { unitText: 'hour' }, unitText: 'year' },
+        }).compensation,
+        ['hour', 'year'],
+      );
+      for (const order of [
+        [{ value: 50 }, { unitText: 'year' }],
+        [{ unitText: 'year' }, { value: 50 }],
+      ]) {
+        expectConflict(
+          extract(source, {
+            baseSalary: { value: order, unitText: 'hour' },
+          }).compensation,
+          ['hour', 'year'],
+        );
+      }
+    });
+
+    it('accepts compatible partial evidence without inventing an amount', () => {
+      const complete = { value: 50, currency: 'USD', unitText: 'hour' };
+      const partial = { currency: 'usd', unitText: 'HOUR' };
+      for (const order of [
+        [complete, partial],
+        [partial, complete],
+      ]) {
+        expect(
+          extract(source, { baseSalary: order }).compensation,
+        ).toMatchObject({
+          value: {
+            minimum: 50,
+            maximum: 50,
+            currency: 'USD',
+            interval: 'hour',
+          },
+          conflicted: false,
+        });
+      }
+      const quantity = { value: 50, unitText: 'hour' };
+      const period = { unitText: 'hours' };
+      for (const order of [
+        [quantity, period],
+        [period, quantity],
+      ]) {
+        expect(
+          extract(source, { baseSalary: { value: order } }).compensation,
+        ).toMatchObject({
+          value: { minimum: 50, maximum: 50, interval: 'hour' },
+          conflicted: false,
+        });
+      }
+      for (const baseSalary of [
+        { currency: 'USD' },
+        { value: { unitText: 'hour' } },
+        [{ currency: 'USD' }, { currency: 'usd', unitText: 'hour' }],
+        {
+          value: [{ unitText: 'hour' }, { unitText: 'hours' }],
+          unitText: 'HOUR',
+        },
+      ]) {
+        expectMissing(extract(source, { baseSalary }).compensation);
+      }
+    });
+
+    it.each(
+      [
+        {
+          name: 'currency',
+          members: [{ value: 50 }, { value: 50, currency: 'USD' }],
+          expected: { currency: 'USD', interval: null, rawText: '50 USD' },
+        },
+        {
+          name: 'interval',
+          members: [{ value: 50 }, { value: 50, unitText: 'hour' }],
+          expected: {
+            currency: null,
+            interval: 'hour',
+            rawText: '50 per hour',
+          },
+        },
+        {
+          name: 'nested quantity interval',
+          members: [
+            { value: { value: 50 } },
+            { value: { value: 50, unitText: 'hour' } },
+          ],
+          expected: {
+            currency: null,
+            interval: 'hour',
+            rawText: '50 per hour',
+          },
+        },
+      ].flatMap((testCase) =>
+        ['forward', 'reverse'].map((order) => ({
+          ...testCase,
+          order,
+          members:
+            order === 'forward'
+              ? testCase.members
+              : [...testCase.members].reverse(),
+        })),
+      ),
+    )(
+      'resolves the same amount with compatible $name enrichment in $order order',
+      ({ members, expected }) => {
+        expect(
+          extract(source, { baseSalary: members }).compensation,
+        ).toMatchObject({
+          value: { minimum: 50, maximum: 50, ...expected },
+          conflicted: false,
+        });
+      },
+    );
+
+    it('keeps separate amounts scalar and quarantines invalid amounts alongside partial metadata', () => {
+      expectConflict(
+        extract(source, {
+          baseSalary: { value: [{ minValue: 40 }, { maxValue: 60 }] },
+        }).compensation,
+        ['40', '60'],
+      );
+      for (const value of [-10, { minValue: 90, maxValue: 70 }]) {
+        const complete = { value, currency: 'USD' };
+        const partial = { currency: 'usd' };
+        for (const order of [
+          [complete, partial],
+          [partial, complete],
+        ]) {
+          expectMissing(extract(source, { baseSalary: order }).compensation);
+        }
+      }
     });
 
     it('finds late contradictory evidence without exceeding provenance limits', () => {
@@ -771,7 +988,7 @@ describe('JSON-LD supported subset and candidate selection', () => {
     }
   });
 
-  it('does not score a conflicting candidate URL as a match', () => {
+  it('retains URL-selection conflicts without scoring a partial URL as a match', () => {
     const document = createDocument(
       'json_ld',
       { title: 'Conflicted', url: [currentUrl, '/jobs/other'] },
@@ -782,7 +999,172 @@ describe('JSON-LD supported subset and candidate selection', () => {
       title: 'Unmatched',
       url: '/jobs/elsewhere',
     });
+    const posting = read('json_ld', document);
+    expect(posting).not.toBeNull();
+    expectMissing(posting!.title);
+    expectConflict(posting!.canonicalUrl, [currentUrl, '/jobs/other']);
+    expect(JobPostingSchema.safeParse(posting).success).toBe(true);
+  });
+
+  it.each(['semantic', 'dom'] as const)(
+    'does not promote a weaker %s identity after appending contradictory candidate URLs',
+    (weaker) => {
+      const urls = [currentUrl, currentUrl + '#details'];
+      const candidate = {
+        '@type': 'JobPosting',
+        title: 'Trusted identity',
+        url: urls,
+      };
+      const document = createDocument('json_ld', candidate);
+      const script = document.querySelector(
+        'script[type="application/ld+json"]',
+      )!;
+      addJson(document, {
+        '@type': 'JobPosting',
+        title: 'Unrelated identity',
+        url: '/jobs/unrelated',
+      });
+      if (weaker === 'semantic') {
+        const semantic = createDocument('semantic', {
+          title: 'Weaker semantic identity',
+        });
+        document.body.append(
+          document.importNode(semantic.querySelector('[itemscope]')!, true),
+        );
+        expect(
+          extractSemanticJobPosting(document, currentUrl)?.title.value,
+        ).toBe('Weaker semantic identity');
+      } else {
+        const fixture = new DOMParser().parseFromString(
+          readFileSync(
+            resolve('tests/fixtures/job-postings/generic-dom-only.html'),
+            'utf8',
+          ),
+          'text/html',
+        );
+        document.body.append(
+          document.importNode(fixture.querySelector('main')!, true),
+        );
+        expect(extractDomJobPosting(document, currentUrl)?.title.value).toBe(
+          'Operations Data Specialist',
+        );
+      }
+      expect(scanPage(document, currentUrl).jobPosting?.title).toMatchObject({
+        value: 'Trusted identity',
+        provenance: [expect.objectContaining({ source: 'json_ld' })],
+      });
+
+      urls.push('/jobs/contradictory');
+      script.textContent = JSON.stringify(candidate);
+      const posting = scanPage(document, currentUrl).jobPosting;
+      expect(posting).not.toBeNull();
+      expectMissing(posting!.title);
+      expectConflict(posting!.canonicalUrl, [
+        currentUrl,
+        '/jobs/contradictory',
+      ]);
+      expect(
+        posting!.canonicalUrl.provenance.every(
+          ({ source }) => source === 'json_ld',
+        ),
+      ).toBe(true);
+      expect(JobPostingSchema.safeParse(posting).success).toBe(true);
+    },
+  );
+
+  it('still permits semantic fallback for unrelated multiple candidates without URL conflicts', () => {
+    const document = createDocument('json_ld', { url: '/jobs/a' });
+    addJson(document, {
+      '@type': 'JobPosting',
+      title: 'Other',
+      url: '/jobs/b',
+    });
+    const semantic = createDocument('semantic', {
+      title: 'Selectable semantic identity',
+    });
+    document.body.append(
+      document.importNode(semantic.querySelector('[itemscope]')!, true),
+    );
     expect(read('json_ld', document)).toBeNull();
+    expect(scanPage(document, currentUrl).jobPosting?.title.value).toBe(
+      'Selectable semantic identity',
+    );
+  });
+
+  it('permits semantic fallback when candidate URL conflicts are unrelated to the page', () => {
+    const document = createDocument(
+      'json_ld',
+      { title: 'Unrelated conflicted identity', url: ['/jobs/a', '/jobs/b'] },
+      ['/jobs/canonical'],
+    );
+    addJson(document, {
+      '@type': 'JobPosting',
+      title: 'Other unrelated identity',
+      url: '/jobs/c',
+    });
+    const semantic = createDocument('semantic', {
+      title: 'Selectable semantic identity',
+    });
+    document.body.append(
+      document.importNode(semantic.querySelector('[itemscope]')!, true),
+    );
+    expect(read('json_ld', document)).toBeNull();
+    expect(scanPage(document, currentUrl).jobPosting?.title).toMatchObject({
+      value: 'Selectable semantic identity',
+      provenance: [expect.objectContaining({ source: 'semantic' })],
+    });
+  });
+
+  it('does not reopen weaker fallback when the remaining URL match has an invalid title', () => {
+    const urls = ['/jobs/trusted', '/jobs/trusted#details'];
+    const candidate = {
+      '@type': 'JobPosting',
+      title: 'Trusted identity',
+      url: urls,
+    };
+    const document = createDocument('json_ld', candidate, ['/jobs/trusted']);
+    const script = document.querySelector(
+      'script[type="application/ld+json"]',
+    )!;
+    addJson(document, {
+      '@type': 'JobPosting',
+      title: 'X'.repeat(JOB_POSTING_LIMITS.title + 1),
+      url: currentUrl,
+    });
+    const semantic = createDocument('semantic', {
+      title: 'Weaker semantic identity',
+    });
+    document.body.append(
+      document.importNode(semantic.querySelector('[itemscope]')!, true),
+    );
+    expect(scanPage(document, currentUrl).jobPosting?.title.value).toBe(
+      'Trusted identity',
+    );
+    urls.push('/jobs/contradictory');
+    script.textContent = JSON.stringify(candidate);
+    const posting = scanPage(document, currentUrl).jobPosting;
+    expect(posting).not.toBeNull();
+    expectMissing(posting!.title);
+    expectConflict(posting!.canonicalUrl, [
+      '/jobs/trusted',
+      '/jobs/contradictory',
+    ]);
+  });
+
+  it('keeps a unique current-URL selection despite an unrelated candidate URL conflict', () => {
+    const document = createDocument('json_ld', {
+      title: 'Current',
+      url: currentUrl,
+    });
+    addJson(document, {
+      '@type': 'JobPosting',
+      title: 'Other',
+      url: ['/jobs/a', '/jobs/b'],
+    });
+    expect(read('json_ld', document)).toMatchObject({
+      title: { value: 'Current' },
+      canonicalUrl: { value: currentUrl, conflicted: false },
+    });
   });
 
   it('can still select unique current-URL evidence when page canonicals conflict', () => {
