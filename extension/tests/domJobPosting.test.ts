@@ -231,6 +231,79 @@ describe('ARIA-assisted DOM JobPosting extraction', () => {
     );
   });
 
+  it.each([
+    {
+      name: 'one canonical',
+      hrefs: ['/jobs/support-engineer'],
+      resolved: true,
+    },
+    {
+      name: 'equivalent repeated canonicals',
+      hrefs: ['/jobs/support-engineer', '/jobs/support-engineer#details'],
+      resolved: true,
+    },
+    {
+      name: 'valid and unusable canonicals',
+      hrefs: ['/jobs/support-engineer', 'javascript:alert(1)'],
+      resolved: true,
+    },
+    {
+      name: 'unusable canonicals only',
+      hrefs: ['javascript:alert(1)', 'mailto:jobs@example.test'],
+      resolved: false,
+    },
+    {
+      name: 'conflicting canonicals',
+      hrefs: ['/jobs/support-engineer', '/jobs/other'],
+      resolved: false,
+    },
+    {
+      name: 'conflicting canonicals in reverse order',
+      hrefs: ['/jobs/other', '/jobs/support-engineer'],
+      resolved: false,
+    },
+  ])('handles DOM canonical URLs: $name', ({ hrefs, resolved }) => {
+    loadHtml(`
+      <main>
+        <h1>Support Engineer</h1>
+        <h2>Responsibilities</h2><p>Support production systems.</p>
+        <h2>Requirements</h2><p>Document changes.</p>
+      </main>
+    `);
+    const url = 'https://careers.example.test/jobs/support-engineer';
+    const original = extractDomJobPosting(document, url, extractedAt);
+    expect(original?.title.value).toBe('Support Engineer');
+    for (const href of hrefs) {
+      const link = document.createElement('link');
+      link.rel = 'canonical';
+      link.setAttribute('href', href);
+      document.head.append(link);
+    }
+
+    const posting = extractDomJobPosting(document, url, extractedAt);
+    expect({ ...posting, canonicalUrl: original?.canonicalUrl }).toEqual(
+      original,
+    );
+    if (resolved) {
+      expect(posting?.canonicalUrl).toMatchObject({
+        value: url,
+        score: 0.75,
+        confidence: 'medium',
+        conflicted: false,
+        provenance: [expect.objectContaining({ source: 'url' })],
+      });
+    } else {
+      expect(posting?.canonicalUrl).toEqual({
+        value: null,
+        score: 0,
+        confidence: 'low',
+        conflicted: false,
+        provenance: [],
+      });
+    }
+    expect(JobPostingSchema.safeParse(posting).success).toBe(true);
+  });
+
   it('leaves unsupported fields unknown in the missing-fields fixture', () => {
     loadFixture('missing-fields.html');
 
@@ -245,6 +318,189 @@ describe('ARIA-assisted DOM JobPosting extraction', () => {
     expect(posting?.compensation.value).toBeNull();
     expect(posting?.canonicalUrl.value).toBeNull();
     expect(posting?.requisitionId.value).toBeNull();
+  });
+
+  it.each([
+    {
+      name: 'one plausible company',
+      nearby: ['Blue Elm Research'],
+      company: 'Blue Elm Research',
+    },
+    {
+      name: 'equivalent repeated companies',
+      nearby: ['Blue Elm Research', 'Blue Elm Research'],
+      company: 'Blue Elm Research',
+    },
+    {
+      name: 'conflicting companies',
+      nearby: ['Blue Elm Research', 'Acme Systems'],
+      company: null,
+    },
+    {
+      name: 'conflicting companies in reverse order',
+      nearby: ['Acme Systems', 'Blue Elm Research'],
+      company: null,
+    },
+    {
+      name: 'company followed by a location',
+      nearby: ['Blue Elm Research', 'Example City, NY'],
+      company: 'Blue Elm Research',
+      location: 'Example City, NY',
+    },
+  ])(
+    'handles nearby company ambiguity: $name',
+    ({ nearby, company, location }) => {
+      loadHtml(`
+      <main>
+        <h1>Support Engineer</h1>
+        ${nearby.map((value) => `<p>${value}</p>`).join('')}
+        <h2>Responsibilities</h2><p>Support production systems.</p>
+        <h2>Requirements</h2><p>Document changes.</p>
+      </main>
+      `);
+      const posting = extractDomJobPosting(
+        document,
+        'https://careers.example.test/jobs/support-engineer',
+        extractedAt,
+      );
+
+      expect(posting).toMatchObject({
+        title: { value: 'Support Engineer' },
+        company: { value: company },
+        location: { value: location ? [location] : null },
+        description: { value: 'Support production systems.' },
+        requirements: { required: [{ text: 'Document changes.' }] },
+      });
+      if (company === null) {
+        expect(posting?.company).toEqual({
+          value: null,
+          score: 0,
+          confidence: 'low',
+          conflicted: false,
+          provenance: [],
+        });
+      } else {
+        expect(posting?.company).toMatchObject({
+          score: 0.75,
+          confidence: 'medium',
+          conflicted: false,
+          provenance: [expect.objectContaining({ source: 'visible_text' })],
+        });
+      }
+      expect(JobPostingSchema.safeParse(posting).success).toBe(true);
+    },
+  );
+
+  it('keeps company unknown when conflicting explicit ARIA companies accompany a plausible nearby company', () => {
+    loadHtml(`
+      <main>
+        <h1>Support Engineer</h1>
+        <p>Harbor Systems</p>
+        <p>Example City, NY</p>
+        <h2>Responsibilities</h2><p>Support production systems.</p>
+        <h2>Requirements</h2><p>Document changes.</p>
+      </main>
+    `);
+    const url = 'https://careers.example.test/jobs/support-engineer';
+    const original = extractDomJobPosting(document, url, extractedAt);
+    expect(original).toMatchObject({
+      title: { value: 'Support Engineer' },
+      company: { value: 'Harbor Systems' },
+      location: { value: ['Example City, NY'] },
+      description: { value: 'Support production systems.' },
+      requirements: { required: [{ text: 'Document changes.' }] },
+    });
+
+    document.querySelector('main')!.insertAdjacentHTML(
+      'afterbegin',
+      `
+        <p aria-label="Company">Blue Elm Research</p>
+        <p aria-label="Company">Acme Systems</p>
+      `,
+    );
+
+    const posting = extractDomJobPosting(document, url, extractedAt);
+    expect({ ...posting, company: original?.company }).toEqual(original);
+    expect(JobPostingSchema.safeParse(posting).success).toBe(true);
+    expect(posting?.company.value).toBeNull();
+  });
+
+  it.each([
+    {
+      name: 'city then remote',
+      locations: ['Example City, NY', 'Remote'],
+    },
+    {
+      name: 'remote then city',
+      locations: ['Remote', 'Example City, NY'],
+    },
+  ])(
+    'keeps location unknown when conflicting nearby locations appear: $name',
+    ({ locations }) => {
+      loadHtml(`
+        <main>
+          <h1>Support Engineer</h1>
+          <p>Harbor Systems</p>
+          <h2>Responsibilities</h2><p>Support production systems.</p>
+          <h2>Requirements</h2><p>Document changes.</p>
+        </main>
+      `);
+      const url = 'https://careers.example.test/jobs/support-engineer';
+      const original = extractDomJobPosting(document, url, extractedAt);
+      expect(original).toMatchObject({
+        title: { value: 'Support Engineer' },
+        company: { value: 'Harbor Systems' },
+        location: { value: null },
+        description: { value: 'Support production systems.' },
+        requirements: { required: [{ text: 'Document changes.' }] },
+      });
+
+      document
+        .querySelector('main > p')!
+        .insertAdjacentHTML(
+          'afterend',
+          locations.map((value) => `<p>${value}</p>`).join(''),
+        );
+
+      const posting = extractDomJobPosting(document, url, extractedAt);
+      expect({ ...posting, location: original?.location }).toEqual(original);
+      expect(JobPostingSchema.safeParse(posting).success).toBe(true);
+      expect(posting?.location.value).toBeNull();
+    },
+  );
+
+  it('keeps location unknown when conflicting explicit ARIA locations accompany a plausible nearby location', () => {
+    loadHtml(`
+      <main>
+        <h1>Support Engineer</h1>
+        <p>Harbor Systems</p>
+        <p>Example City, NY</p>
+        <h2>Responsibilities</h2><p>Support production systems.</p>
+        <h2>Requirements</h2><p>Document changes.</p>
+      </main>
+    `);
+    const url = 'https://careers.example.test/jobs/support-engineer';
+    const original = extractDomJobPosting(document, url, extractedAt);
+    expect(original).toMatchObject({
+      title: { value: 'Support Engineer' },
+      company: { value: 'Harbor Systems' },
+      location: { value: ['Example City, NY'] },
+      description: { value: 'Support production systems.' },
+      requirements: { required: [{ text: 'Document changes.' }] },
+    });
+
+    document.querySelector('main')!.insertAdjacentHTML(
+      'afterbegin',
+      `
+        <p aria-label="Location">Remote</p>
+        <p aria-label="Location">Boston, MA</p>
+      `,
+    );
+
+    const posting = extractDomJobPosting(document, url, extractedAt);
+    expect({ ...posting, location: original?.location }).toEqual(original);
+    expect(JobPostingSchema.safeParse(posting).success).toBe(true);
+    expect(posting?.location.value).toBeNull();
   });
 
   it.each([

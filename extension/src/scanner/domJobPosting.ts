@@ -425,30 +425,31 @@ function candidates(document: Document): DomCandidate[] | null {
   );
 }
 
-function explicitAriaMetadata(
+function explicitAriaObservations(
   root: HTMLElement,
   labels: ReadonlySet<string>,
   locator: string,
-): EvidenceField<string> | null {
-  const fields = Array.from(
+): EvidenceField<string>[] {
+  return Array.from(
     root.querySelectorAll<HTMLElement>('[aria-label], [aria-labelledby]'),
   )
     .filter((element) => !isExcluded(element, root))
-    .map((element) => {
+    .flatMap((element) => {
       const name = ariaName(element, root);
       const value = readableText(element);
       if (!name || !value || !labels.has(normalizedLabel(name))) {
-        return null;
+        return [];
       }
-      return {
-        value,
-        evidence: value,
-        locator,
-        source: 'aria' as const,
-        element,
-      };
+      return [
+        {
+          value,
+          evidence: value,
+          locator,
+          source: 'aria' as const,
+          element,
+        },
+      ];
     });
-  return uniqueField(fields);
 }
 
 function nearbyMetadata(candidate: DomCandidate): string[] {
@@ -503,15 +504,18 @@ function looksLikeCompany(value: string): boolean {
 }
 
 function company(candidate: DomCandidate): EvidenceField<string> | null {
-  const explicit = explicitAriaMetadata(
+  const explicit = explicitAriaObservations(
     candidate.root,
     new Set(['company', 'employer', 'hiring organization']),
     'dom[0] aria-company',
   );
-  if (explicit) {
-    return explicit;
+  if (explicit.length > 0) {
+    return uniqueField(explicit);
   }
-  const value = nearbyMetadata(candidate).find(looksLikeCompany);
+  const values = [
+    ...new Set(nearbyMetadata(candidate).filter(looksLikeCompany)),
+  ];
+  const value = values.length === 1 ? values[0] : null;
   return value
     ? {
         value,
@@ -523,15 +527,19 @@ function company(candidate: DomCandidate): EvidenceField<string> | null {
 }
 
 function locations(candidate: DomCandidate): EvidenceField<string[]> | null {
-  const explicit = explicitAriaMetadata(
+  const explicit = explicitAriaObservations(
     candidate.root,
     new Set(['location', 'job location']),
     'dom[0] aria-location',
   );
-  if (explicit) {
-    return { ...explicit, value: [explicit.value] };
+  if (explicit.length > 0) {
+    const field = uniqueField(explicit);
+    return field ? { ...field, value: [field.value] } : null;
   }
-  const value = nearbyMetadata(candidate).find(looksLikeLocation);
+  const values = [
+    ...new Set(nearbyMetadata(candidate).filter(looksLikeLocation)),
+  ];
+  const value = values.length === 1 ? values[0] : null;
   return value
     ? {
         value: [value],
@@ -817,18 +825,24 @@ function canonicalUrl(
   document: Document,
   currentUrl: string,
 ): EvidenceField<string> | null {
-  const href = document
-    .querySelector<HTMLLinkElement>('link[rel~="canonical"][href]')
-    ?.getAttribute('href');
-  const value = normalizedHttpUrl(href ?? null, currentUrl);
-  return value
-    ? {
-        value,
-        evidence: href ?? value,
-        locator: 'link[rel~="canonical"]',
-        source: 'url',
-      }
-    : null;
+  return uniqueField(
+    Array.from(
+      document.querySelectorAll<HTMLLinkElement>(
+        'link[rel~="canonical"][href]',
+      ),
+    ).map((link) => {
+      const href = link.getAttribute('href');
+      const value = normalizedHttpUrl(href, currentUrl);
+      return value
+        ? {
+            value,
+            evidence: href ?? value,
+            locator: 'link[rel~="canonical"]',
+            source: 'url' as const,
+          }
+        : null;
+    }),
+  );
 }
 
 function sourced<T>(field: EvidenceField<T>) {
