@@ -474,11 +474,17 @@ function nearbyMetadata(
       break;
     }
     if (!isExcluded(sibling, candidate.root)) {
-      const name = ariaName(sibling, candidate.root);
-      const value =
-        name && explicitLabels.has(normalizedLabel(name))
-          ? null
-          : readableText(sibling);
+      const clone = sibling.cloneNode(true) as Element;
+      for (const element of [
+        clone,
+        ...clone.querySelectorAll('[aria-label], [aria-labelledby]'),
+      ]) {
+        const name = ariaName(element, candidate.root);
+        if (name && explicitLabels.has(normalizedLabel(name))) {
+          element.replaceChildren(' ');
+        }
+      }
+      const value = readableText(clone);
       if (value && isPlausible(value) && !values.includes(value)) {
         values.push(value);
       }
