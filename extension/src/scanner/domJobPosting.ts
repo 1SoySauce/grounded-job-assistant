@@ -475,13 +475,26 @@ function nearbyMetadata(
     }
     if (!isExcluded(sibling, candidate.root)) {
       const clone = sibling.cloneNode(true) as Element;
+      const referencedLabelIds = new Set<string>();
       for (const element of [
         clone,
         ...clone.querySelectorAll('[aria-label], [aria-labelledby]'),
       ]) {
         const name = ariaName(element, candidate.root);
         if (name && explicitLabels.has(normalizedLabel(name))) {
+          if (!cleanString(element.getAttribute('aria-label'))) {
+            for (const id of (element.getAttribute('aria-labelledby') ?? '')
+              .split(/\s+/)
+              .filter(Boolean)) {
+              referencedLabelIds.add(id);
+            }
+          }
           element.replaceChildren(' ');
+        }
+      }
+      for (const label of [clone, ...clone.querySelectorAll('[id]')]) {
+        if (referencedLabelIds.has(label.id)) {
+          label.replaceChildren(' ');
         }
       }
       const value = readableText(clone);

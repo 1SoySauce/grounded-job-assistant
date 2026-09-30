@@ -793,6 +793,52 @@ describe('ARIA-assisted DOM JobPosting extraction', () => {
     });
   });
 
+  describe('Checkpoint 2G referenced ARIA label isolation', () => {
+    it.each([
+      {
+        name: 'nearby company plus aria-labelledby location',
+        company: 'Harbor Systems',
+      },
+      {
+        name: 'aria-labelledby location with no nearby company',
+        company: null,
+      },
+    ])('isolates $name', ({ company }) => {
+      loadHtml(`
+        <main>
+          <h1>Support Engineer</h1>
+          ${company ? `<p>${company}</p>` : ''}
+          <div>
+            <span id="location-label">Location</span>
+            <span aria-labelledby="location-label">Berlin</span>
+          </div>
+          <h2>Responsibilities</h2><p>Support production systems.</p>
+          <h2>Requirements</h2><p>Document changes.</p>
+        </main>
+      `);
+      const posting = extractDomJobPosting(
+        document,
+        'https://careers.example.test/jobs/support-engineer',
+        extractedAt,
+      );
+
+      expect(posting).toMatchObject({
+        title: { value: 'Support Engineer' },
+        location: {
+          value: ['Berlin'],
+          provenance: [expect.objectContaining({ source: 'aria' })],
+        },
+        description: { value: 'Support production systems.' },
+        requirements: { required: [{ text: 'Document changes.' }] },
+      });
+      expect(JobPostingSchema.safeParse(posting).success).toBe(true);
+      expect(posting?.company.value).toBe(company);
+      if (company === null) {
+        expect(posting?.company.provenance).toEqual([]);
+      }
+    });
+  });
+
   it.each([
     'London, England',
     'London, England, United Kingdom',
