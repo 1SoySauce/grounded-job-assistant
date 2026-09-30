@@ -56,6 +56,156 @@ describe('ARIA-assisted DOM JobPosting extraction', () => {
     expect(JobPostingSchema.safeParse(result.jobPosting).success).toBe(true);
   });
 
+  describe('Uptime Crew DOM title and role-content compatibility', () => {
+    const jobTitle = 'Entry Level Software Developer (AI Native)';
+    const roleDescription =
+      'Build and test software with an engineering team while learning to review AI-assisted changes.';
+    const requirement = 'Experience writing and testing software in a team.';
+    const jobDetails = `
+      <h3>Minimum qualifications</h3>
+      <ul><li>${requirement}</li></ul>
+      <h3>Compensation</h3>
+      <p>$70,000 - $90,000 USD per year</p>
+    `;
+    const application = `
+      <form>
+        <h2>Quick Apply</h2>
+        <button type="submit">Apply</button>
+      </form>
+    `;
+
+    function extractFixture(
+      titleMarkup: string,
+      roleHeading: string | null = 'About this role',
+      details = jobDetails,
+      applicationMarkup = '',
+    ) {
+      loadHtml(`
+        <main>
+          ${titleMarkup}
+          <p>Harbor Systems</p>
+          <p>Remote</p>
+          ${roleHeading ? `<h3>${roleHeading}</h3><p>${roleDescription}</p>` : ''}
+          <h3>The program</h3>
+          <p>The program includes supervised assignments and regular mentoring.</p>
+          ${details}
+          ${applicationMarkup}
+        </main>
+      `);
+      return extractDomJobPosting(
+        document,
+        'https://careers.example.test/jobs/entry-level-developer',
+        extractedAt,
+      );
+    }
+
+    // Isolate native-h2 title support from the exact role-description alias.
+    it.each([
+      { name: 'A: h1 control', titleTag: 'h1', roleHeading: 'About this role' },
+      {
+        name: 'B: h2 title only',
+        titleTag: 'h2',
+        roleHeading: 'About this role',
+      },
+      {
+        name: 'C: role-heading alias only',
+        titleTag: 'h1',
+        roleHeading: 'Why this role',
+      },
+      { name: 'D: both gaps', titleTag: 'h2', roleHeading: 'Why this role' },
+    ])(
+      'extracts the intended posting for $name',
+      ({ titleTag, roleHeading }) => {
+        const posting = extractFixture(
+          `<${titleTag}>${jobTitle}</${titleTag}>`,
+          roleHeading,
+          jobDetails,
+          application,
+        );
+
+        expect(posting).not.toBeNull();
+        expect(posting?.title).toMatchObject({
+          value: jobTitle,
+          provenance: [
+            { source: 'dom_heading', locator: `dom[0] ${titleTag}` },
+          ],
+        });
+        expect(posting?.company.value).toBe('Harbor Systems');
+        expect(posting?.location.value).toEqual(['Remote']);
+        expect(posting?.description).toMatchObject({
+          value: roleDescription,
+          provenance: [{ source: 'dom_heading', excerpt: roleDescription }],
+        });
+        expect(posting?.requirements).toMatchObject({
+          required: [
+            {
+              text: requirement,
+              classification: 'required',
+              provenance: [{ source: 'dom_heading', excerpt: requirement }],
+            },
+          ],
+          preferred: [],
+          unknown: [],
+        });
+        expect(JobPostingSchema.safeParse(posting).success).toBe(true);
+      },
+    );
+
+    it.each([
+      { name: 'job title first', headings: [jobTitle, 'Quick Apply'] },
+      { name: 'application action first', headings: ['Quick Apply', jobTitle] },
+    ])(
+      'extracts the job title beside uncontained Quick Apply: $name',
+      ({ headings }) => {
+        const posting = extractFixture(
+          headings.map((heading) => `<h2>${heading}</h2>`).join(''),
+        );
+
+        expect(posting).not.toBeNull();
+        expect(posting?.title).toMatchObject({
+          value: jobTitle,
+          provenance: [{ source: 'dom_heading', locator: 'dom[0] h2' }],
+        });
+        expect(JobPostingSchema.safeParse(posting).success).toBe(true);
+      },
+    );
+
+    it('rejects Quick Apply as the only h2 title candidate', () => {
+      expect(extractFixture('<h2>Quick Apply</h2>')).toBeNull();
+    });
+
+    it.each([
+      { name: 'developer first', headings: [jobTitle, 'Platform Engineer'] },
+      { name: 'engineer first', headings: ['Platform Engineer', jobTitle] },
+    ])('rejects two distinct non-action h2 titles: $name', ({ headings }) => {
+      expect(
+        extractFixture(
+          headings.map((heading) => `<h2>${heading}</h2>`).join(''),
+        ),
+      ).toBeNull();
+    });
+
+    it('does not use an h2 fallback after conflicting level-1 titles', () => {
+      expect(
+        extractFixture(`
+          <h1>Software Developer</h1>
+          <h1>Platform Engineer</h1>
+          <h2>${jobTitle}</h2>
+        `),
+      ).toBeNull();
+    });
+
+    it('rejects Why this role without independent job-detail evidence', () => {
+      expect(
+        extractFixture(`<h1>${jobTitle}</h1>`, 'Why this role', ''),
+      ).toBeNull();
+    });
+
+    it('rejects The program as the only role-content heading', () => {
+      expect(extractFixture(`<h1>${jobTitle}</h1>`, null)).toBeNull();
+    });
+  });
+
   it('keeps JSON-LD ahead of conflicting generic DOM content', () => {
     loadFixture('conflicting-sources.html');
 

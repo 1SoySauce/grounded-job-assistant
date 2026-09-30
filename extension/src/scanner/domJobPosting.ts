@@ -31,6 +31,7 @@ interface EvidenceField<T> {
 }
 
 interface DomSection {
+  element: Element;
   kind: SectionKind;
   label: string;
   locator: string;
@@ -52,6 +53,7 @@ const EXCLUDED_CANDIDATE_ROOT_SELECTOR = `header, ${EXCLUDED_SELECTOR}`;
 const SECTION_LABELS: Readonly<Record<string, SectionKind>> = {
   'about the role': 'description',
   'about this role': 'description',
+  'why this role': 'description',
   'job description': 'description',
   'role description': 'description',
   description: 'description',
@@ -219,9 +221,11 @@ function headingField(
     value,
     evidence: value,
     locator:
-      source === 'aria'
-        ? 'dom[0] [role="heading"][aria-level="1"]'
-        : 'dom[0] h1',
+      element.tagName === 'H2'
+        ? 'dom[0] h2'
+        : source === 'aria'
+          ? 'dom[0] [role="heading"][aria-level="1"]'
+          : 'dom[0] h1',
     source,
     element,
   };
@@ -238,13 +242,58 @@ function uniqueField<T>(
   return uniqueKeys.size === 1 ? (present[0] ?? null) : null;
 }
 
-function title(root: HTMLElement): EvidenceField<string> | null {
+function h2Title(
+  root: HTMLElement,
+  candidateSections: DomSection[] | null,
+): EvidenceField<string> | null {
+  if (!candidateSections?.length) {
+    return null;
+  }
+  const fields = Array.from(root.querySelectorAll('h2'))
+    .filter(
+      (heading) =>
+        !isExcluded(heading, root) &&
+        !candidateSections.some(({ element }) => element.contains(heading)),
+    )
+    .map((heading) => headingField(heading, root))
+    .filter(
+      (field): field is EvidenceField<string> =>
+        field !== null &&
+        sectionKind(field.value) === null &&
+        normalizedLabel(field.value) !== 'quick apply',
+    );
+  // Require uniqueness after removing the exact application-action label.
+  const field = fields.length === 1 ? fields[0] : null;
+  const heading = field?.element;
+  if (
+    !field ||
+    !heading ||
+    candidateSections.some(
+      ({ element }) =>
+        heading.contains(element) ||
+        !(
+          heading.compareDocumentPosition(element) &
+          Node.DOCUMENT_POSITION_FOLLOWING
+        ),
+    )
+  ) {
+    return null;
+  }
+  return field;
+}
+
+function title(
+  root: HTMLElement,
+  candidateSections: DomSection[] | null,
+): EvidenceField<string> | null {
   const headings = Array.from(
     root.querySelectorAll<HTMLElement>('h1, [role="heading"][aria-level="1"]'),
   ).filter(
     (element) => headingLevel(element) === 1 && !isExcluded(element, root),
   );
-  return uniqueField(headings.map((element) => headingField(element, root)));
+  return headings.length > 0
+    ? uniqueField(headings.map((element) => headingField(element, root)))
+    : h2Title(root, candidateSections);
 }
 
 function sectionKind(label: string): SectionKind | null {
@@ -287,6 +336,7 @@ function ariaSections(root: HTMLElement): DomSection[] {
     );
     return [
       {
+        element: container,
         kind,
         label,
         locator: `dom[0] aria-section[${index}]`,
@@ -332,6 +382,7 @@ function headingSections(
     }
     return [
       {
+        element: heading,
         kind,
         label,
         locator: `dom[0] heading-section[${index}]`,
@@ -404,8 +455,8 @@ function candidates(document: Document): DomCandidate[] | null {
   }
 
   const plausible = roots.flatMap((root) => {
-    const candidateTitle = title(root);
     const candidateSections = sections(root);
+    const candidateTitle = title(root, candidateSections);
     if (
       !candidateTitle ||
       !candidateSections ||
