@@ -452,20 +452,34 @@ function explicitAriaObservations(
     });
 }
 
-function nearbyMetadata(candidate: DomCandidate): string[] {
+function nearbyMetadata(
+  candidate: DomCandidate,
+  isPlausible: (value: string) => boolean,
+): string[] {
   const titleElement = candidate.title.element;
   if (!titleElement) {
     return [];
   }
+  const explicitLabels = new Set([
+    'company',
+    'employer',
+    'hiring organization',
+    'location',
+    'job location',
+  ]);
   const values: string[] = [];
   let sibling = titleElement.nextElementSibling;
-  while (sibling && values.length < 4) {
+  while (sibling && values.length < 2) {
     if (isHeading(sibling) || sibling.matches('section, article')) {
       break;
     }
     if (!isExcluded(sibling, candidate.root)) {
-      const value = readableText(sibling);
-      if (value) {
+      const name = ariaName(sibling, candidate.root);
+      const value =
+        name && explicitLabels.has(normalizedLabel(name))
+          ? null
+          : readableText(sibling);
+      if (value && isPlausible(value) && !values.includes(value)) {
         values.push(value);
       }
     }
@@ -512,9 +526,7 @@ function company(candidate: DomCandidate): EvidenceField<string> | null {
   if (explicit.length > 0) {
     return uniqueField(explicit);
   }
-  const values = [
-    ...new Set(nearbyMetadata(candidate).filter(looksLikeCompany)),
-  ];
+  const values = nearbyMetadata(candidate, looksLikeCompany);
   const value = values.length === 1 ? values[0] : null;
   return value
     ? {
@@ -536,9 +548,7 @@ function locations(candidate: DomCandidate): EvidenceField<string[]> | null {
     const field = uniqueField(explicit);
     return field ? { ...field, value: [field.value] } : null;
   }
-  const values = [
-    ...new Set(nearbyMetadata(candidate).filter(looksLikeLocation)),
-  ];
+  const values = nearbyMetadata(candidate, looksLikeLocation);
   const value = values.length === 1 ? values[0] : null;
   return value
     ? {
@@ -806,11 +816,17 @@ function normalizedHttpUrl(
   value: string | null,
   baseUrl: string,
 ): string | null {
-  if (!value) {
+  if (value === null) {
     return null;
   }
+
+  const trimmedValue = value.trim();
+  if (!trimmedValue) {
+    return null;
+  }
+
   try {
-    const parsed = new URL(value, baseUrl);
+    const parsed = new URL(trimmedValue, baseUrl);
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
       return null;
     }

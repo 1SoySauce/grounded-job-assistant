@@ -304,6 +304,71 @@ describe('ARIA-assisted DOM JobPosting extraction', () => {
     expect(JobPostingSchema.safeParse(posting).success).toBe(true);
   });
 
+  describe('Checkpoint 2E unusable DOM canonical values', () => {
+    it.each([
+      {
+        name: 'valid canonical then spaces',
+        hrefs: ['/jobs/canonical', '   '],
+        resolved: true,
+      },
+      {
+        name: 'spaces then valid canonical',
+        hrefs: ['   ', '/jobs/canonical'],
+        resolved: true,
+      },
+      {
+        name: 'valid canonical then mixed whitespace',
+        hrefs: ['/jobs/canonical', ' \t\n '],
+        resolved: true,
+      },
+      {
+        name: 'mixed whitespace then valid canonical',
+        hrefs: [' \t\n ', '/jobs/canonical'],
+        resolved: true,
+      },
+      {
+        name: 'spaces only',
+        hrefs: ['   '],
+        resolved: false,
+      },
+      {
+        name: 'mixed whitespace only',
+        hrefs: [' \t\n '],
+        resolved: false,
+      },
+    ])(
+      'ignores whitespace-only canonical hrefs: $name',
+      ({ hrefs, resolved }) => {
+        loadHtml(`
+        <main>
+          <h1>Support Engineer</h1>
+          <h2>Responsibilities</h2><p>Support production systems.</p>
+          <h2>Requirements</h2><p>Document changes.</p>
+        </main>
+      `);
+        const url = 'https://careers.example.test/jobs/support-engineer';
+        const original = extractDomJobPosting(document, url, extractedAt);
+        expect(original?.title.value).toBe('Support Engineer');
+        for (const href of hrefs) {
+          const link = document.createElement('link');
+          link.rel = 'canonical';
+          link.setAttribute('href', href);
+          document.head.append(link);
+        }
+
+        const posting = extractDomJobPosting(document, url, extractedAt);
+        expect(posting).not.toBeNull();
+        expect(posting?.canonicalUrl.value).toBe(
+          resolved ? 'https://careers.example.test/jobs/canonical' : null,
+        );
+        expect({ ...posting, canonicalUrl: original?.canonicalUrl }).toEqual(
+          original,
+        );
+        expect(JobPostingSchema.safeParse(posting).success).toBe(true);
+      },
+    );
+  });
+
   it('leaves unsupported fields unknown in the missing-fields fixture', () => {
     loadFixture('missing-fields.html');
 
@@ -501,6 +566,188 @@ describe('ARIA-assisted DOM JobPosting extraction', () => {
     expect({ ...posting, location: original?.location }).toEqual(original);
     expect(JobPostingSchema.safeParse(posting).success).toBe(true);
     expect(posting?.location.value).toBeNull();
+  });
+
+  describe('Checkpoint 2D nearby metadata boundary hardening', () => {
+    it.each([
+      {
+        field: 'location' as const,
+        name: 'contradiction after duplicates',
+        nearby: ['Harbor Systems', 'Remote', 'Remote', 'Boston, MA'],
+        duplicate: 'Remote',
+        company: 'Harbor Systems',
+        location: null,
+      },
+      {
+        field: 'location' as const,
+        name: 'contradiction before duplicates',
+        nearby: ['Harbor Systems', 'Boston, MA', 'Remote', 'Remote'],
+        duplicate: 'Remote',
+        company: 'Harbor Systems',
+        location: null,
+      },
+      {
+        field: 'company' as const,
+        name: 'contradiction after duplicates',
+        nearby: ['Remote', 'Harbor Systems', 'Harbor Systems', 'Acme Systems'],
+        duplicate: 'Harbor Systems',
+        company: null,
+        location: ['Remote'],
+      },
+      {
+        field: 'company' as const,
+        name: 'contradiction before duplicates',
+        nearby: ['Remote', 'Acme Systems', 'Harbor Systems', 'Harbor Systems'],
+        duplicate: 'Harbor Systems',
+        company: null,
+        location: ['Remote'],
+      },
+    ])(
+      'keeps $field unknown when duplicate nearby observations cross the boundary: $name',
+      ({ field, nearby, duplicate, company, location }) => {
+        loadHtml(`
+          <main>
+            <h1>Support Engineer</h1>
+            ${nearby.map((value) => `<p>${value}</p>`).join('')}
+            <h2>Responsibilities</h2><p>Support production systems.</p>
+            <h2>Requirements</h2><p>Document changes.</p>
+          </main>
+        `);
+        const url = 'https://careers.example.test/jobs/support-engineer';
+        const original = extractDomJobPosting(document, url, extractedAt);
+        expect(original).toMatchObject({
+          title: { value: 'Support Engineer' },
+          company: { value: company },
+          location: { value: location },
+          description: { value: 'Support production systems.' },
+          requirements: { required: [{ text: 'Document changes.' }] },
+        });
+        expect(original?.[field].value).toBeNull();
+
+        document
+          .querySelector('main > p:nth-of-type(3)')!
+          .insertAdjacentHTML('beforebegin', `<p>${duplicate}</p>`);
+
+        const posting = extractDomJobPosting(document, url, extractedAt);
+        expect({ ...posting, [field]: original?.[field] }).toEqual(original);
+        expect(JobPostingSchema.safeParse(posting).success).toBe(true);
+        expect(posting?.[field].value).toBeNull();
+      },
+    );
+
+    it.each([
+      {
+        field: 'location' as const,
+        name: 'contradiction fifth',
+        nearby: [
+          'Harbor Systems',
+          'Remote',
+          'Full-time.',
+          'Posted today.',
+          'Boston, MA',
+        ],
+        preserved: { company: { value: 'Harbor Systems' } },
+      },
+      {
+        field: 'location' as const,
+        name: 'contradiction moved earlier',
+        nearby: [
+          'Harbor Systems',
+          'Remote',
+          'Full-time.',
+          'Boston, MA',
+          'Posted today.',
+        ],
+        preserved: { company: { value: 'Harbor Systems' } },
+      },
+      {
+        field: 'company' as const,
+        name: 'contradiction fifth',
+        nearby: [
+          'Remote',
+          'Harbor Systems',
+          'Full-time.',
+          'Posted today.',
+          'Acme Systems',
+        ],
+        preserved: { location: { value: ['Remote'] } },
+      },
+      {
+        field: 'company' as const,
+        name: 'contradiction moved earlier',
+        nearby: [
+          'Remote',
+          'Harbor Systems',
+          'Full-time.',
+          'Acme Systems',
+          'Posted today.',
+        ],
+        preserved: { location: { value: ['Remote'] } },
+      },
+    ])(
+      'keeps $field unknown with five distinct nearby values: $name',
+      ({ field, nearby, preserved }) => {
+        loadHtml(`
+          <main>
+            <h1>Support Engineer</h1>
+            ${nearby.map((value) => `<p>${value}</p>`).join('')}
+            <h2>Responsibilities</h2><p>Support production systems.</p>
+            <h2>Requirements</h2><p>Document changes.</p>
+          </main>
+        `);
+        const posting = extractDomJobPosting(
+          document,
+          'https://careers.example.test/jobs/support-engineer',
+          extractedAt,
+        );
+
+        expect(posting).toMatchObject({
+          title: { value: 'Support Engineer' },
+          description: { value: 'Support production systems.' },
+          requirements: { required: [{ text: 'Document changes.' }] },
+          ...preserved,
+        });
+        expect(JobPostingSchema.safeParse(posting).success).toBe(true);
+        expect(posting?.[field].value).toBeNull();
+      },
+    );
+
+    it('preserves nearby company when an explicit ARIA location resembles a company', () => {
+      loadHtml(`
+        <main>
+          <h1>Support Engineer</h1>
+          <p>Harbor Systems</p>
+          <h2>Responsibilities</h2><p>Support production systems.</p>
+          <h2>Requirements</h2><p>Document changes.</p>
+        </main>
+      `);
+      const url = 'https://careers.example.test/jobs/support-engineer';
+      const original = extractDomJobPosting(document, url, extractedAt);
+      expect(original).toMatchObject({
+        title: { value: 'Support Engineer' },
+        company: { value: 'Harbor Systems' },
+        location: { value: null },
+        description: { value: 'Support production systems.' },
+        requirements: { required: [{ text: 'Document changes.' }] },
+      });
+
+      document
+        .querySelector('main > p')!
+        .insertAdjacentHTML('afterend', '<p aria-label="Location">Berlin</p>');
+
+      const posting = extractDomJobPosting(document, url, extractedAt);
+      expect({
+        ...posting,
+        company: original?.company,
+        location: original?.location,
+      }).toEqual(original);
+      expect(JobPostingSchema.safeParse(posting).success).toBe(true);
+      expect(posting?.location).toMatchObject({
+        value: ['Berlin'],
+        provenance: [expect.objectContaining({ source: 'aria' })],
+      });
+      expect(posting?.company.value).toBe('Harbor Systems');
+    });
   });
 
   it.each([
