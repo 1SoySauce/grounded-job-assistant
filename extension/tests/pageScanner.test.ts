@@ -82,6 +82,55 @@ describe('page scanner foundations', () => {
     expect(PageScanResultSchema.safeParse(result).success).toBe(true);
   });
 
+  it('counts a native input inside a reachable open shadow root', () => {
+    document.head.innerHTML = '';
+    const host = document.createElement('x-field');
+    document.body.replaceChildren(host);
+    const shadowRoot = host.attachShadow({ mode: 'open' });
+    shadowRoot.innerHTML = '<input type="text">';
+
+    expect(host.shadowRoot).toBe(shadowRoot);
+    expect(shadowRoot.querySelectorAll('input')).toHaveLength(1);
+    expect(document.querySelectorAll('input')).toHaveLength(0);
+
+    const result = scanPage(document, 'https://careers.example.test/apply');
+
+    expect(result.formCount).toBe(0);
+    expect(result.fieldCount).toBe(1);
+  });
+
+  it('counts nested open-shadow fields and slotted fields exactly once', () => {
+    document.head.innerHTML = '';
+    const host = document.createElement('x-field');
+    host.innerHTML = '<input type="text" role="combobox">';
+    document.body.replaceChildren(host);
+    const shadowRoot = host.attachShadow({ mode: 'open' });
+    const nestedHost = document.createElement('x-field');
+    shadowRoot.append(document.createElement('slot'), nestedHost);
+    nestedHost.attachShadow({ mode: 'open' }).innerHTML =
+      '<textarea></textarea>';
+
+    const result = scanPage(document, 'https://careers.example.test/apply');
+
+    expect(result.formCount).toBe(0);
+    expect(result.fieldCount).toBe(2);
+  });
+
+  it('ignores controls in closed shadow roots and iframe documents', () => {
+    document.head.innerHTML = '';
+    const host = document.createElement('x-field');
+    const iframe = document.createElement('iframe');
+    document.body.replaceChildren(host, iframe);
+    host.attachShadow({ mode: 'closed' }).innerHTML = '<input type="text">';
+    iframe.contentDocument!.body.innerHTML = '<input type="text">';
+    expect(host.shadowRoot).toBeNull();
+
+    const result = scanPage(document, 'https://careers.example.test/apply');
+
+    expect(result.formCount).toBe(0);
+    expect(result.fieldCount).toBe(0);
+  });
+
   it('keeps the coarse structured-data signal independent from extraction', () => {
     document.head.innerHTML = '';
     document.body.innerHTML = '';

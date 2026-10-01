@@ -107,6 +107,27 @@ export function classifyPage(signals: PageSignals): PageType {
   return 'unrelated';
 }
 
+function countFields(document: Document): number {
+  const roots: Array<Document | ShadowRoot> = [document];
+  let count = 0;
+
+  // Each walker stays in its own tree; append open roots in host order.
+  for (const root of roots) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const element = node as Element;
+      if (element.matches('input, select, textarea, [role="combobox"]')) {
+        count += 1;
+      }
+      if (element.shadowRoot) {
+        roots.push(element.shadowRoot);
+      }
+    }
+  }
+
+  return count;
+}
+
 export function collectPageSignals(
   document: Document,
   url: string,
@@ -117,9 +138,7 @@ export function collectPageSignals(
     url,
     title: document.title.slice(0, 500),
     text: rawText.replace(/\s+/g, ' ').trim().slice(0, 80_000),
-    fieldCount: document.querySelectorAll(
-      'input, select, textarea, [role="combobox"]',
-    ).length,
+    fieldCount: countFields(document),
     formCount: document.forms.length,
     hasJobPostingStructuredData: hasJobPostingStructuredData(document),
   };
