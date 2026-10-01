@@ -1,4 +1,7 @@
 import type { AtsProvider, PageScanResult, PageType } from '../types/scanner';
+import { extractDomJobPosting } from './domJobPosting';
+import { extractJsonLdJobPosting } from './jsonLdJobPosting';
+import { extractSemanticJobPosting } from './semanticJobPosting';
 
 export interface PageSignals {
   url: string;
@@ -104,6 +107,27 @@ export function classifyPage(signals: PageSignals): PageType {
   return 'unrelated';
 }
 
+function countFields(document: Document): number {
+  const roots: Array<Document | ShadowRoot> = [document];
+  let count = 0;
+
+  // Each walker stays in its own tree; append open roots in host order.
+  for (const root of roots) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const element = node as Element;
+      if (element.matches('input, select, textarea, [role="combobox"]')) {
+        count += 1;
+      }
+      if (element.shadowRoot) {
+        roots.push(element.shadowRoot);
+      }
+    }
+  }
+
+  return count;
+}
+
 export function collectPageSignals(
   document: Document,
   url: string,
@@ -114,16 +138,24 @@ export function collectPageSignals(
     url,
     title: document.title.slice(0, 500),
     text: rawText.replace(/\s+/g, ' ').trim().slice(0, 80_000),
-    fieldCount: document.querySelectorAll(
-      'input, select, textarea, [role="combobox"]',
-    ).length,
+    fieldCount: countFields(document),
     formCount: document.forms.length,
     hasJobPostingStructuredData: hasJobPostingStructuredData(document),
   };
 }
 
 export function scanPage(document: Document, url: string): PageScanResult {
+  const scannedAt = new Date().toISOString();
   const signals = collectPageSignals(document, url);
+  const jsonLdJobPosting = extractJsonLdJobPosting(
+    document,
+    url,
+    scannedAt,
+  ).jobPosting;
+  const structuredJobPosting =
+    jsonLdJobPosting ?? extractSemanticJobPosting(document, url, scannedAt);
+  const jobPosting =
+    structuredJobPosting ?? extractDomJobPosting(document, url, scannedAt);
 
   return {
     pageType: classifyPage(signals),
@@ -133,6 +165,7 @@ export function scanPage(document: Document, url: string): PageScanResult {
     fieldCount: signals.fieldCount,
     formCount: signals.formCount,
     hasJobPostingStructuredData: signals.hasJobPostingStructuredData,
-    scannedAt: new Date().toISOString(),
+    jobPosting,
+    scannedAt,
   };
 }
