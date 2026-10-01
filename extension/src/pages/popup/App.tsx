@@ -105,7 +105,11 @@ export function App() {
             </StatusPill>
             <span>{scan.ats === 'generic' ? 'Generic page' : scan.ats}</span>
           </div>
-          <h2>{scan.title || 'Untitled page'}</h2>
+          <h2>
+            {scan.pageType === 'job_posting'
+              ? (scan.jobPosting?.title.value ?? 'Job posting detected')
+              : scan.title || 'Untitled page'}
+          </h2>
           <p>
             {scan.fieldCount} fields · {scan.formCount} forms
           </p>
